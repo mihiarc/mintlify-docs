@@ -1,0 +1,257 @@
+---
+title: "Reference Table Joins: Species, Forest Type, State Names"
+sidebarTitle: "Reference Tables"
+description: "Join human-readable names to FIA estimation results using join_species_names(), join_forest_type_names(), join_state_names(), and join_multiple_references()."
+---
+
+FIA estimation functions return numeric codes for species (`SPCD`), forest types (`FORTYPCD`), and states (`STATECD`) because that is how the underlying FIADB stores categorical attributes. The reference join helpers translate those codes into human-readable names by looking them up in the `REF_SPECIES`, `REF_FOREST_TYPE`, and `REF_STATE` tables that ship with every pyFIA DuckDB file. You call each helper after running your estimation function, pass in the result DataFrame and your open `FIA` connection, and receive back the same DataFrame with one or more name columns appended.
+
+## `join_species_names()`
+
+Appends common name and optionally scientific name columns to any DataFrame that contains a species code column.
+
+```python
+join_species_names(
+    data: polars.DataFrame,
+    db: FIA | str,
+    species_col: str = "SPCD",
+    common_name_col: str = "COMMON_NAME",
+    include_scientific: bool = False,
+) -> polars.DataFrame
+```
+
+### Parameters
+
+<ParamField path="data" type="polars.DataFrame" required>
+  The estimation result DataFrame to enrich. Must contain the column
+  specified by `species_col`.
+</ParamField>
+
+<ParamField path="db" type="FIA | str" required>
+  An open `FIA` instance or a path string to a `.duckdb` file.
+  When you pass a path string, `join_species_names()` opens and closes
+  the connection internally.
+</ParamField>
+
+<ParamField path="species_col" type="str" default='"SPCD"'>
+  The column in `data` that contains FIA species codes to match against
+  `REF_SPECIES`.
+</ParamField>
+
+<ParamField path="common_name_col" type="str" default='"COMMON_NAME"'>
+  The name of the new column that will hold the common name string.
+</ParamField>
+
+<ParamField path="include_scientific" type="bool" default="false">
+  When `True`, a `SCIENTIFIC_NAME` column is also appended alongside
+  `COMMON_NAME`.
+</ParamField>
+
+### Example
+
+```python
+from pyfia import FIA, tpa, join_species_names
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    result = tpa(db, by_species=True)
+
+    # Append common name only
+    result = join_species_names(result, db)
+    # New column: COMMON_NAME
+
+    # Append both common and scientific names
+    result = join_species_names(result, db, include_scientific=True)
+    # New columns: COMMON_NAME, SCIENTIFIC_NAME
+```
+
+---
+
+## `join_forest_type_names()`
+
+Appends a human-readable forest type name to any DataFrame that contains a forest type code column.
+
+```python
+join_forest_type_names(
+    data: polars.DataFrame,
+    db: FIA | str,
+    forest_type_col: str = "FORTYPCD",
+    name_col: str = "FOREST_TYPE_NAME",
+) -> polars.DataFrame
+```
+
+### Parameters
+
+<ParamField path="data" type="polars.DataFrame" required>
+  The estimation result DataFrame to enrich. Must contain the column
+  specified by `forest_type_col`.
+</ParamField>
+
+<ParamField path="db" type="FIA | str" required>
+  An open `FIA` instance or a path string to a `.duckdb` file.
+</ParamField>
+
+<ParamField path="forest_type_col" type="str" default='"FORTYPCD"'>
+  The column in `data` that holds FIA forest type codes.
+</ParamField>
+
+<ParamField path="name_col" type="str" default='"FOREST_TYPE_NAME"'>
+  The name of the new column that will hold the forest type name string.
+</ParamField>
+
+### Example
+
+```python
+from pyfia import FIA, area, join_forest_type_names
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    result = area(db, grp_by="FORTYPCD")
+    result = join_forest_type_names(result, db)
+    # New column: FOREST_TYPE_NAME
+```
+
+---
+
+## `join_state_names()`
+
+Appends state name and optionally state abbreviation columns to any DataFrame that contains a state code column.
+
+```python
+join_state_names(
+    data: polars.DataFrame,
+    db: FIA | str,
+    state_col: str = "STATECD",
+    state_name_col: str = "STATE_NAME",
+    include_abbr: bool = True,
+) -> polars.DataFrame
+```
+
+### Parameters
+
+<ParamField path="data" type="polars.DataFrame" required>
+  The estimation result DataFrame to enrich. Must contain the column
+  specified by `state_col`.
+</ParamField>
+
+<ParamField path="db" type="FIA | str" required>
+  An open `FIA` instance or a path string to a `.duckdb` file.
+</ParamField>
+
+<ParamField path="state_col" type="str" default='"STATECD"'>
+  The column in `data` that holds FIA / FIPS state codes.
+</ParamField>
+
+<ParamField path="state_name_col" type="str" default='"STATE_NAME"'>
+  The name of the new column that will hold the full state name string.
+</ParamField>
+
+<ParamField path="include_abbr" type="bool" default="true">
+  When `True`, a `STATE_ABBR` column is also appended with the two-letter
+  postal abbreviation.
+</ParamField>
+
+### Example
+
+```python
+from pyfia import FIA, area, join_state_names
+
+with FIA("southeast.duckdb") as db:
+    db.clip_most_recent()
+
+    result = area(db, grp_by="STATECD")
+    result = join_state_names(result, db)
+    # New columns: STATE_NAME, STATE_ABBR
+```
+
+---
+
+## `join_multiple_references()`
+
+Applies several reference joins in a single call. This is the most convenient option when your estimation result contains two or more code columns that each need human-readable names.
+
+```python
+join_multiple_references(
+    data: polars.DataFrame,
+    db: FIA | str,
+    joins: list[dict],
+) -> polars.DataFrame
+```
+
+### Parameters
+
+<ParamField path="data" type="polars.DataFrame" required>
+  The estimation result DataFrame to enrich.
+</ParamField>
+
+<ParamField path="db" type="FIA | str" required>
+  An open `FIA` instance or a path string to a `.duckdb` file.
+</ParamField>
+
+<ParamField path="joins" type="list[dict]" required>
+  A list of join specification dictionaries. Each dictionary must include a
+  `"type"` key with one of the following values:
+
+  - `"species"` — Calls `join_species_names()` with default options
+  - `"forest_type"` — Calls `join_forest_type_names()` with default options
+  - `"state"` — Calls `join_state_names()` with default options
+
+  Additional keys in each dictionary map to keyword arguments of the
+  corresponding join function (e.g., `"include_scientific": True`).
+</ParamField>
+
+### Example
+
+```python
+from pyfia import FIA, volume, join_multiple_references
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    result = volume(db, grp_by=["SPCD", "FORTYPCD"])
+
+    result = join_multiple_references(result, db, joins=[
+        {"type": "species", "include_scientific": True},
+        {"type": "forest_type"},
+    ])
+    # New columns: COMMON_NAME, SCIENTIFIC_NAME, FOREST_TYPE_NAME
+```
+
+---
+
+## Behavior Notes
+
+<Note>
+  All four join functions are **non-destructive**: they never modify or drop
+  your existing columns. If a code value in your result has no match in the
+  reference table (for example, code `999` for an unknown forest type), the
+  new name column will contain `null` for that row rather than raising an
+  error.
+</Note>
+
+<Tip>
+  You can pass a plain path string as `db` whenever you do not already have
+  an open `FIA` context. This is convenient in notebook or script workflows
+  where you load data from a saved Parquet file and then join reference names:
+
+  ```python
+  import polars as pl
+  from pyfia import join_species_names
+
+  saved = pl.read_parquet("results/tpa_by_species.parquet")
+  saved = join_species_names(saved, "nc.duckdb")
+  ```
+</Tip>
+
+## Source Reference Tables
+
+| Function | Source Table | Key Column |
+|---|---|---|
+| `join_species_names()` | `REF_SPECIES` | `SPCD` |
+| `join_forest_type_names()` | `REF_FOREST_TYPE` | `FORTYPCD` |
+| `join_state_names()` | `REF_STATE` | `STATECD` |

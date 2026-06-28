@@ -1,0 +1,179 @@
+---
+title: "tpa(): Estimate Trees Per Acre and Basal Area"
+sidebarTitle: "tpa()"
+description: "tpa() calculates trees per acre (TPA) and basal area per acre (BAA) using FIA design-based estimation. Supports species, size class, and custom domain grouping."
+---
+
+The `tpa()` function computes two of the most fundamental stand-level forest metrics: trees per acre (TPA) and basal area per acre (BAA). Both estimates are produced simultaneously from a single pass through the FIA tree records, using design-based expansion factors that account for the variable-radius plot design. You can stratify results by species, diameter size class, or any combination of tree- and plot-level attributes, making `tpa()` a versatile starting point for stocking analysis, growth modeling data preparation, and silvicultural assessments.
+
+## Function Signature
+
+```python
+tpa(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    land_type: str = "forest",
+    tree_type: str = "live",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    plot_domain: str | None = None,
+    totals: bool = False,
+    variance: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An active `FIA` database connection. Call `clip_by_state()` and `clip_most_recent()` on the object before passing it to `tpa()` to ensure the correct evaluation is in scope.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to group results. Any column present in the `TREE`, `COND`, or `PLOT` tables can be referenced. When `None`, a single statewide aggregate estimate is returned.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, automatically adds `SPCD` (FIA species code) to the grouping. This is a shorthand that avoids manually including `"SPCD"` in `grp_by`. Combine with `join_species_names()` to attach common and scientific names to the output.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, groups results into standard 2-inch diameter size classes (e.g., 1.0–2.9 in, 3.0–4.9 in, …). Size classes are derived from the `DIA` column and appended automatically.
+</ParamField>
+
+<ParamField path="land_type" type="str" default="forest">
+  Restricts the denominator area used in per-acre calculations to a specific land classification:
+
+  - `"forest"` — All forest land
+  - `"timber"` — Productive, unreserved timberland only
+  - `"all"` — All sampled land including non-forest
+</ParamField>
+
+<ParamField path="tree_type" type="str" default="live">
+  Filters which trees contribute to the numerator of the per-acre estimate:
+
+  - `"live"` — Live trees only (default)
+  - `"dead"` — Standing dead trees (snags)
+  - `"gs"` — Growing stock trees (live, on timberland, meeting merchantability standards)
+  - `"all"` — All sampled trees regardless of status
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter expression referencing columns in the FIA `TREE` table. Applied after the `tree_type` filter. Use this to target specific diameter thresholds, species groups, or crown classes. Example: `"DIA >= 12.0"` to include only trees 12 inches DBH and larger.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the condition level (`COND` table). Controls which forest conditions are included in the denominator area. Example: `"OWNGRPCD == 10"` restricts the area base to National Forest land.
+</ParamField>
+
+<ParamField path="plot_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the plot level (`PLOT` table) before estimation begins. Use this to spatially restrict the analysis or exclude specific plot types.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="false">
+  When `True`, adds `TPA_TOTAL` and `BAA_TOTAL` columns representing estimated population-level totals (total number of trees and total basal area across the entire forested area). Requires that a valid total area estimate can be computed from the current evaluation.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, exposes intermediate variance components in the output DataFrame. Useful for combining estimates across units or performing custom uncertainty propagation.
+</ParamField>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Usage">
+    ```python
+    from pyfia import FIA, tpa
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Statewide TPA and BAA across all forest land
+        total = tpa(db)
+        print(total)
+    ```
+  </Tab>
+  <Tab title="Species Breakdown">
+    ```python
+    from pyfia import FIA, tpa, join_species_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # TPA and BAA for every species
+        by_species = tpa(db, by_species=True)
+        by_species = join_species_names(by_species, db)
+
+        print(by_species.sort("TPA_ACRE", descending=True).head(10))
+    ```
+  </Tab>
+  <Tab title="Size & Tree Filters">
+    ```python
+    from pyfia import FIA, tpa
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # TPA by 2-inch size class
+        by_size = tpa(db, by_size_class=True)
+
+        # Large trees only (DBH >= 12 inches)
+        large = tpa(db, tree_domain="DIA >= 12.0")
+
+        # Growing stock on timberland
+        gs = tpa(db, tree_type="gs", land_type="timber")
+
+        # With population totals
+        with_totals = tpa(db, totals=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Output Columns
+
+| Column | Description |
+|---|---|
+| `TPA_ACRE` | Trees per acre, design-based estimate |
+| `BAA_ACRE` | Basal area per acre in square feet |
+| `TPA_SE` | Standard error of `TPA_ACRE` |
+| `BAA_SE` | Standard error of `BAA_ACRE` |
+| `TPA_TOTAL` | Population total number of trees (only when `totals=True`) |
+| `BAA_TOTAL` | Population total basal area in sq ft (only when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+Any columns listed in `grp_by`, plus `SPCD` if `by_species=True` and `SIZE_CLASS` if `by_size_class=True`, appear as leading identifier columns.
+
+## Estimation Formulas
+
+TPA and BAA are estimated using FIA's standard expansion-factor approach. For each sampled tree record:
+
+```
+TPA  = TPA_UNADJ  × adjustment_factor
+BAA  = π × (DIA / 24)² × TPA_UNADJ × adjustment_factor
+```
+
+Where:
+- `TPA_UNADJ` is the unadjusted trees-per-acre value stored in the FIA `TREE` table, reflecting the plot design (fixed-radius microplot, subplot, or macroplot depending on tree size)
+- `adjustment_factor` is derived from the ratio of sampled to forested conditions on each plot, accounting for non-forest inclusions
+- `DIA` is measured diameter at breast height in inches; dividing by 24 converts to feet and produces square feet when squared and multiplied by π
+
+<Note>
+  Basal area is always reported in **square feet per acre**, consistent with standard North American forestry conventions. If you need square meters per hectare, multiply `BAA_ACRE` by `0.2296`.
+</Note>
+
+<Accordion title="Understanding the adjustment_factor">
+  FIA plots sometimes straddle the boundary between forest and non-forest conditions. In these cases, only the forested portion of the plot contributes to forest population estimates. The `adjustment_factor` is the ratio of the forested condition proportion to the full plot area, and it upward-adjusts trees on partially forested plots so that the per-acre estimate correctly represents the forest population rather than the mixed plot.
+</Accordion>
+
+<Tip>
+  When you combine `by_species=True` with `by_size_class=True`, you get a full species-by-size distribution table. This is particularly useful for feeding diameter distribution models or estimating species-specific ingrowth and mortality rates.
+</Tip>
+
+<Warning>
+  Using `tree_type="gs"` (growing stock) with `land_type="forest"` can produce misleading results because growing-stock standards are defined for timberland, not all forest land. Pair `tree_type="gs"` with `land_type="timber"` to match the standard FIA growing-stock reporting framework.
+</Warning>

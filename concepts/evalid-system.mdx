@@ -1,0 +1,158 @@
+---
+title: "FIA Evaluation IDs: How EVALID Filtering Works"
+sidebarTitle: "EVALID System"
+description: "EVALIDs group FIA plots into statistically valid estimation units. Using the wrong EVALID can inflate estimates by 10–60x. Learn how pyFIA handles this automatically."
+---
+
+Every FIA state database contains multiple overlapping sets of plot measurements, each corresponding to a different inventory cycle or estimation purpose. An Evaluation ID — EVALID — is the six-digit key that identifies exactly which set of plots belongs to a particular, statistically coherent estimation unit. Before you run any estimate with pyFIA, you must filter the database to a single EVALID. Skipping this step causes pyFIA to count the same plots multiple times, inflating estimates by anywhere from 10× to 60× depending on how many evaluation cycles are present in the database.
+
+## EVALID Format
+
+An EVALID is a six-digit integer with the structure `SSYYTT`:
+
+| Segment | Length | Meaning |
+|---------|--------|---------|
+| `SS` | 2 digits | State FIPS code |
+| `YY` | 2 digits | Last two digits of the inventory year |
+| `TT` | 2 digits | Evaluation type code |
+
+For example, `372301` decodes as: state 37 (North Carolina), year 2023, type 01 (volume estimation).
+
+## Evaluation Types
+
+Different estimation goals require different evaluation types. Each type assembles a distinct set of plots optimized for its target estimand.
+
+<CardGroup cols={2}>
+  <Card title="VOL — Volume Estimation" icon="ruler-vertical">
+    Type code `01`. Used for trees-per-acre, basal area, volume, biomass, and carbon estimates. This is the most common evaluation type and the default used by `clip_most_recent()`.
+  </Card>
+  <Card title="GRM — Growth, Removal, Mortality" icon="arrows-rotate">
+    Type codes `02` (EXPGROW), `03` (EXPREMV), `04` (EXPMORT). Required for any change estimation — annual growth rates, harvest removals, or mortality. Uses paired remeasurement plots.
+  </Card>
+  <Card title="ALL — Area Estimation" icon="map">
+    Type code `00` (EXPALL). Used when the primary goal is estimating forest area rather than per-acre tree attributes. Area estimates from VOL evaluations are generally sufficient for most workflows.
+  </Card>
+  <Card title="CHNG — Change Estimation" icon="chart-line">
+    Used for net change analyses spanning multiple inventory cycles. Less commonly needed than VOL or GRM for routine reporting.
+  </Card>
+</CardGroup>
+
+## How pyFIA Handles EVALIDs
+
+pyFIA provides four methods for EVALID management. In most workflows you will use `clip_by_state()` followed by `clip_most_recent()`.
+
+<Steps>
+  <Step title="Clip to a State">
+    `clip_by_state(state_fips)` filters the database to plots belonging to a single state and automatically identifies the available EVALIDs for that state. Pass the numeric FIPS code.
+
+    ```python
+    from pyfia import FIA
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)  # North Carolina
+    ```
+  </Step>
+  <Step title="Select the Most Recent Evaluation">
+    `clip_most_recent(eval_type)` narrows to the single most recent EVALID of the specified type. This is the recommended approach for production workflows because it is reproducible and avoids accidental double-counting.
+
+    ```python
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="VOL")
+        result = db.tpa()
+    ```
+  </Step>
+  <Step title="Run Growth, Removal, or Mortality Estimates">
+    For GRM estimates, switch to `eval_type="GRM"` before calling mortality or growth estimators.
+
+    ```python
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="GRM")
+        mortality = db.mortality()
+    ```
+  </Step>
+</Steps>
+
+## Discovering Available EVALIDs
+
+Before clipping, you can inspect which EVALIDs are present in a database using `find_evalid()`. This is useful when working with a new state file or when you need a specific historical evaluation.
+
+```python
+from pyfia import FIA
+
+# Find available EVALIDs for North Carolina
+with FIA("nc.duckdb") as db:
+    evalids = db.find_evalid(state=37, most_recent=True)
+    print(evalids)  # e.g. [372301]
+
+# Find all EVALIDs for a state across all years
+with FIA("nc.duckdb") as db:
+    all_evalids = db.find_evalid(state=37)
+    print(all_evalids)  # e.g. [372301, 372101, 371901, ...]
+
+# Find GRM evaluations only
+with FIA("nc.duckdb") as db:
+    grm_evalids = db.find_evalid(state=37, eval_type="GRM", most_recent=True)
+    print(grm_evalids)
+```
+
+`find_evalid()` accepts the following parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `state` | `int` | State FIPS code to filter results |
+| `most_recent` | `bool` | Return only the single most recent EVALID per type |
+| `year` | `int` | Filter to a specific inventory year |
+| `eval_type` | `str` | One of `"VOL"`, `"GRM"`, `"ALL"`, or `"CHNG"` |
+
+## Manual EVALID Specification
+
+If you need to reproduce a specific historical estimate or target an exact evaluation, pass the EVALID directly to `clip_by_evalid()`:
+
+```python
+with FIA("nc.duckdb") as db:
+    db.clip_by_evalid(372301)
+    result = db.tpa()
+```
+
+You can also pass a list of EVALIDs when working across multiple states from a combined database:
+
+```python
+with FIA("southeast.duckdb") as db:
+    db.clip_by_evalid([372301, 132301, 452301])  # NC, GA, SC
+    result = db.tpa()
+```
+
+<Warning>
+  Always filter to a single evaluation before running estimates. `clip_most_recent()` is the safest approach. If you call an estimator without first clipping to an EVALID, pyFIA will raise an error rather than silently return inflated numbers.
+</Warning>
+
+## Putting It All Together
+
+The following example shows the complete recommended workflow for a routine state-level estimate:
+
+```python
+from pyfia import FIA
+
+# Standard VOL workflow
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+
+    trees_per_acre = db.tpa(by_species=True)
+    basal_area = db.basal_area()
+    volume = db.volume()
+
+# GRM workflow for change estimates
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="GRM")
+
+    annual_mortality = db.mortality()
+    annual_growth = db.growth()
+```
+
+<Tip>
+  When comparing your pyFIA results against the official EVALIDator web tool, make sure both are using the same EVALID. The EVALIDator displays its EVALID prominently in the query interface — verify that it matches the value selected by `clip_most_recent()`.
+</Tip>

@@ -1,0 +1,125 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "pyFIA",
+  "projectDescription": "A high-performance Python library for analyzing USDA Forest Inventory and Analysis (FIA) data, built on DuckDB and Polars with design-based statistical methods that match EVALIDator exactly.",
+  "theme": "luma",
+  "primaryColor": "#006D6D",
+  "lightColor": "#E6F4F4",
+  "darkColor": "#004D4D",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/fia-data",
+              "concepts/evalid-system",
+              "concepts/statistical-methods"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/downloading-data",
+              "guides/filtering-data",
+              "guides/grouping-results",
+              "guides/spatial-analysis",
+              "guides/evalidator-validation"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/settings",
+              "configuration/motherduck"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Database",
+            "pages": [
+              "api/fia-class",
+              "api/download"
+            ]
+          },
+          {
+            "group": "Estimators",
+            "pages": [
+              "api/area",
+              "api/tpa",
+              "api/volume",
+              "api/biomass",
+              "api/mortality",
+              "api/growth",
+              "api/removals",
+              "api/site-index",
+              "api/area-change",
+              "api/panel"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/reference-tables",
+              "api/evalidator-client"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "One-line data download from USDA FIA DataMart for any US state",
+    "Design-based estimation matching EVALIDator statistical output exactly",
+    "10–100x faster than EVALIDator web UI via DuckDB and Polars backends",
+    "Estimators for area, volume, biomass, carbon, TPA, mortality, growth, and removals",
+    "EVALID-based filtering for statistically valid plot groupings",
+    "Spatial filtering and grouping using polygon boundaries (GeoJSON, Shapefile, GeoPackage)",
+    "MotherDuck cloud database support for serverless access",
+    "Flexible domain filtering with SQL-style expressions",
+    "EVALIDator API client for cross-validation of estimates",
+    "Reference table joins for human-readable species, forest type, and state names"
+  ],
+  "publicApiSurface": [
+    "FIA(db_path) — main database class",
+    "FIA.from_download(states) — download and connect in one call",
+    "FIA.clip_by_state(state) — filter by US state FIPS code",
+    "FIA.clip_most_recent(eval_type) — filter to most recent evaluation",
+    "FIA.clip_by_evalid(evalid) — filter to specific EVALID(s)",
+    "FIA.clip_by_polygon(polygon) — spatial filter by polygon boundary",
+    "FIA.intersect_polygons(polygon, attributes) — spatial join for grouping",
+    "FIA.query(sql) — execute raw read-only SQL",
+    "download(states, dir, common, tables, force) — download FIA data from DataMart",
+    "area(db, land_type, area_domain, grp_by, totals) — forest area estimation",
+    "tpa(db, tree_type, land_type, tree_domain, grp_by, by_size_class, totals) — trees per acre",
+    "volume(db, vol_type, tree_type, land_type, tree_domain, grp_by, totals) — volume estimation",
+    "biomass(db, component, tree_type, land_type, tree_domain, grp_by, totals) — biomass estimation",
+    "mortality(db, measure, tree_type, land_type, tree_domain, grp_by) — annual mortality",
+    "growth(db, measure, tree_type, land_type, tree_domain, grp_by) — net growth estimation",
+    "removals(db, measure, tree_type, land_type, tree_domain, grp_by) — harvest removals",
+    "site_index(db, grp_by) — site productivity index",
+    "area_change(db, grp_by) — area change over time",
+    "panel(db, eval_type, grp_by) — panel-based estimates",
+    "join_species_names(data, db) — add species common names to results",
+    "join_forest_type_names(data, db) — add forest type names to results",
+    "join_state_names(data, db) — add state names to results",
+    "EVALIDatorClient — API client for official USFS estimates",
+    "validate_pyfia_estimate(db, estimate_type, state, year) — validate against EVALIDator",
+    "PyFIASettings — configuration via environment variables (PYFIA_*)",
+    "MotherDuckFIA(database, motherduck_token) — cloud database connection"
+  ]
+}

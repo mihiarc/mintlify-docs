@@ -1,47 +1,169 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with pyFIA in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install pyFIA, download FIA data for a US state, and run your first forest inventory estimate in under 5 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+pyFIA is designed so that you can go from a fresh Python environment to a statistically valid forest inventory estimate in a single session. This guide walks you through every step — install, download, connect, filter, and estimate — using Rhode Island as the example state because it is the smallest FIA database and downloads in seconds.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+<Warning>
+  Always call `clip_most_recent()` (or another filter method) before running estimates. Without an EVALID filter, plots are counted across multiple overlapping evaluations and totals can be inflated by 10–60×. pyFIA does not apply a default filter automatically.
+</Warning>
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Install pyFIA">
+    Install pyFIA from PyPI using pip or uv. Python 3.11 or higher is required.
 
-    ```bash
-    npm install your-package
-    ```
+    <Tabs>
+      <Tab title="pip">
+        ```bash
+        pip install pyfia
+        ```
+      </Tab>
+      <Tab title="uv (recommended)">
+        ```bash
+        uv pip install pyfia
+        ```
+      </Tab>
+    </Tabs>
+
+    uv resolves and installs dependencies significantly faster than pip and is the recommended option for new projects. Either tool installs an identical package.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+  <Step title="Download FIA data">
+    pyFIA's `download()` function fetches the FIA SQLite database for any US state directly from the USDA FIA DataMart, unpacks it, and returns the local path.
+
+    ```python
+    from pyfia import download
+
+    db_path = download("RI")  # Rhode Island — smallest state, fastest download
+    print(db_path)  # e.g. /home/user/.pyfia/RI_PUBLIC_SQLite.db
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+    Pass any two-letter state abbreviation (`"OR"`, `"WA"`, `"ME"`, etc.). Large states like Washington or Oregon take longer to download and query; Rhode Island is the best choice when you are learning the API.
+
+    <Tip>
+      By default, pyFIA saves downloaded databases to `~/.pyfia/`. Set the `PYFIA_DATABASE_PATH` environment variable to store them in a different directory.
+    </Tip>
+  </Step>
+
+  <Step title="Connect and filter to the most recent evaluation">
+    Open the database with the `FIA` context manager, then call `clip_most_recent()` to restrict all subsequent queries to the single most recent statewide evaluation. This is the standard starting point for status estimates (area, TPA, volume, biomass).
+
+    ```python
+    from pyfia import FIA
+
+    with FIA(db_path) as db:
+        db.clip_most_recent()
+        # db is now scoped to the most recent EVALID
+        # All estimation calls inside this block use that filter
+    ```
+
+    Using `FIA` as a context manager ensures the DuckDB connection is closed cleanly when the block exits. You can also instantiate it directly (`db = FIA(db_path)`) and call `db.close()` manually.
+
+    <Note>
+      For mortality, growth, and removals (GRM) estimates, pass `eval_type="GRM"` instead: `db.clip_most_recent(eval_type="GRM")`. GRM evaluations track change between two measurement periods and use a different set of EVALIDs than status evaluations.
+    </Note>
+  </Step>
+
+  <Step title="Run estimation functions">
+    With the filter applied, call any estimation function and pass `db` as the first argument. Each function returns a Polars DataFrame.
+
+    ```python
+    from pyfia import FIA, area, tpa, volume
+
+    with FIA(db_path) as db:
+        db.clip_most_recent()
+
+        # Acres of forest land
+        forest_area = area(db, land_type="forest")
+
+        # Trees per acre, broken out by species
+        trees = tpa(db, by_species=True)
+
+        # Net merchantable volume on timberland
+        vol = volume(db, land_type="timber", vol_type="net")
+    ```
+
+    Common keyword arguments shared by most functions:
+
+    | Argument | Type | Description |
+    |---|---|---|
+    | `land_type` | `str` | `"forest"`, `"timber"`, or `"all"` |
+    | `by_species` | `bool` | Group results by species code |
+    | `by_size_class` | `bool` | Group results by diameter size class |
+    | `totals` | `bool` | Append population-level totals alongside per-acre estimates |
+  </Step>
+
+  <Step title="Understand the output columns">
+    Every estimation function returns a DataFrame with a consistent set of columns so you can interpret results the same way regardless of which function you called.
+
+    ```python
+    print(forest_area.columns)
+    # ['estimate', 'se', 'cv', 'ci_lower', 'ci_upper']
+    ```
+
+    | Column | Description |
+    |---|---|
+    | `estimate` | Point estimate (acres, trees/acre, cu ft/acre, etc.) |
+    | `se` | Standard error of the estimate |
+    | `cv` | Coefficient of variation (`se / estimate × 100`) |
+    | `ci_lower` | Lower bound of the 95 % confidence interval |
+    | `ci_upper` | Upper bound of the 95 % confidence interval |
+
+    When you pass `totals=True`, the DataFrame also includes `ESTIMATE_TOTAL`, `SE_TOTAL`, `CI_LOWER_TOTAL`, and `CI_UPPER_TOTAL` columns that represent population-level totals (e.g. total acres of forest across the state) rather than per-unit-area rates.
+
+    ```python
+    forest_area_total = area(db, land_type="forest", totals=True)
+    print(forest_area_total.select(["estimate", "ESTIMATE_TOTAL", "ci_lower", "ci_upper"]))
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Complete Working Example
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The following script combines every step above into a single runnable file. Copy it into a `.py` file or a Jupyter notebook cell and run it as-is.
+
+```python
+from pyfia import download, FIA, area, volume, tpa, join_species_names
+
+db_path = download("RI")  # Rhode Island — small and fast
+
+with FIA(db_path) as db:
+    db.clip_most_recent()
+
+    # Forest area
+    forest_area = area(db, land_type="forest")
+    print("Forest area (acres):")
+    print(forest_area)
+
+    # Trees per acre by species
+    trees = tpa(db, by_species=True)
+    trees_named = join_species_names(trees, db)
+    print("\nTrees per acre by species:")
+    print(trees_named.sort("TPA_ACRE", descending=True).head(10))
+
+    # Net merchantable volume
+    vol = volume(db, land_type="timber", vol_type="net")
+    print("\nTimber volume (cu ft/acre):")
+    print(vol)
+```
+
+`join_species_names()` is a convenience helper that enriches a species-grouped DataFrame with the FIA species reference table, adding common name and scientific name columns so your output is human-readable without a separate lookup.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Explore virtual environment setup, spatial extras, and environment variable configuration.
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/concepts/evalid-system">
+    Understand evaluations, EVALIDs, and how design-based estimation works in FIA.
+  </Card>
+  <Card title="Spatial Filtering" icon="map" href="/guides/spatial-analysis">
+    Clip your analysis to a watershed, county, or any custom polygon boundary.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/area">
+    Full parameter documentation for every estimation and utility function.
+  </Card>
+</CardGroup>

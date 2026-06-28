@@ -1,0 +1,113 @@
+---
+title: "Connect to FIA Data on MotherDuck Cloud"
+sidebarTitle: "MotherDuck"
+description: "Use MotherDuckFIA to connect to FIA databases hosted on MotherDuck's serverless cloud DuckDB platform without downloading data locally."
+---
+
+`MotherDuckFIA` is a subclass of the standard `FIA` class that connects to FIA databases hosted on [MotherDuck](https://motherduck.com), a serverless cloud platform built on DuckDB. It gives you access to the same clip methods and estimator functions you already know — `clip_most_recent`, `area`, `tpa`, `volume`, and the rest — without requiring you to download or store any data locally. All you need is a MotherDuck account, a valid token, and an internet connection.
+
+## Authentication
+
+MotherDuck authenticates requests using a personal access token tied to your account. The recommended approach is to export the token as an environment variable so it never appears in your source code.
+
+```bash
+# Set your token in the shell before running Python
+export MOTHERDUCK_TOKEN=your_token_here
+```
+
+You can also pass the token as a keyword argument when constructing `MotherDuckFIA`, which is useful for short scripts and notebooks where environment variables are inconvenient. Either way, the token must be valid and must have read access to the target database.
+
+<Steps>
+  <Step title="Create a MotherDuck account">
+    Sign up at [motherduck.com](https://motherduck.com) if you do not already have an account.
+  </Step>
+  <Step title="Generate a personal access token">
+    Open your MotherDuck account settings, navigate to **Access Tokens**, and create a new token. Copy it immediately — it is only shown once.
+  </Step>
+  <Step title="Export the token">
+    Add `export MOTHERDUCK_TOKEN=your_token_here` to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`) or to your project's `.env` file so pyFIA can find it automatically.
+  </Step>
+</Steps>
+
+## Basic Usage
+
+Once your token is set, constructing a `MotherDuckFIA` instance is identical to opening a local database — you just pass the remote database name instead of a file path.
+
+```python
+from pyfia import MotherDuckFIA, area, tpa
+
+# Token is read automatically from MOTHERDUCK_TOKEN
+db = MotherDuckFIA("fia_nc")
+db.clip_most_recent()
+result = area(db, land_type="forest")
+
+# Or supply the token inline
+db = MotherDuckFIA("fia_ga", motherduck_token="your_token")
+
+# Use as a context manager to ensure the connection is closed cleanly
+with MotherDuckFIA("fia_nc", motherduck_token="your_token") as db:
+    db.clip_most_recent()
+    print(area(db))
+```
+
+<Tip>
+  The context manager form (`with MotherDuckFIA(...) as db:`) is the safest pattern for scripts and notebooks. It closes the underlying DuckDB connection automatically when the block exits, even if an exception is raised.
+</Tip>
+
+## Same API as FIA
+
+`MotherDuckFIA` exposes the same interface as the local `FIA` class. You can clip by state FIPS code, filter to a specific evaluation type, and call any estimator function without changing your analysis code.
+
+```python
+from pyfia import MotherDuckFIA, area, tpa, volume
+
+with MotherDuckFIA("fia_nc") as db:
+    # Clip to North Carolina (FIPS 37) and the most recent volume evaluation
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+
+    # Run estimators exactly as you would against a local database
+    forest_area = area(db, land_type="forest")
+    trees       = tpa(db, by_species=True)
+    vol         = volume(db, land_type="timber")
+```
+
+<Note>
+  `MotherDuckFIA` uses the `md:database_name` connection string format internally. If you prefer, you can pass a MotherDuck connection string directly to the standard `FIA` class: `FIA("md:fia_nc")`. Both approaches are equivalent.
+</Note>
+
+## Limitations
+
+MotherDuck connections run entirely inside DuckDB's cloud service, which means certain local extensions are unavailable.
+
+<Warning>
+  Spatial filtering methods — `clip_by_polygon` and `intersect_polygons` — raise a `SpatialExtensionError` when called on a `MotherDuckFIA` connection. The DuckDB spatial extension cannot be loaded in the MotherDuck environment. If your analysis requires polygon-based clipping, use a local DuckDB file instead.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Supported" icon="circle-check">
+    - `clip_by_state`
+    - `clip_most_recent`
+    - `clip_by_year`
+    - All estimator functions (`area`, `tpa`, `volume`, etc.)
+    - Context manager (`with` statement)
+    - Inline token or `MOTHERDUCK_TOKEN` env var
+  </Card>
+  <Card title="Not Supported" icon="circle-xmark">
+    - `clip_by_polygon`
+    - `intersect_polygons`
+    - Offline / air-gapped environments
+    - Expired or unauthorized tokens
+  </Card>
+</CardGroup>
+
+The table below summarizes the key differences between `MotherDuckFIA` and the local `FIA` class to help you decide which to use.
+
+| Feature | `FIA` (local) | `MotherDuckFIA` (cloud) |
+|---|---|---|
+| Data storage | Local `.duckdb` file | MotherDuck cloud |
+| Setup required | Download FIA data | MotherDuck account + token |
+| Internet required | No | Yes |
+| Spatial filtering | ✅ Supported | ❌ Not supported |
+| Same estimator API | ✅ | ✅ |
+| Performance | Depends on local hardware | Depends on network & cloud |

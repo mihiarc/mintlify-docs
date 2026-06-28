@@ -1,0 +1,201 @@
+---
+title: "growth(): Estimate Annual Net Forest Growth"
+sidebarTitle: "growth()"
+description: "growth() estimates annual net tree growth in volume, biomass, or tree count using FIA's GRM tables. Requires a GRM evaluation type for valid results."
+---
+
+The `growth()` function estimates average annual net tree growth across a forested area using FIA's Growth, Removal, and Mortality (GRM) component tables. You can measure growth as merchantable cubic-foot volume, above-ground biomass, or tree count, and you can stratify results by species, size class, ownership, or any custom domain expression.
+
+<Warning>
+  `growth()` requires a GRM evaluation. Before calling this function, run
+  `db.clip_most_recent(eval_type="GRM")` on your `FIA` instance. Using a
+  standard `CURR` evaluation will produce incorrect or empty results.
+</Warning>
+
+## Function Signature
+
+```python
+growth(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    size_class_type: str = "standard",
+    land_type: str = "forest",
+    tree_type: str = "gs",
+    measure: str = "volume",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    totals: bool = True,
+    variance: bool = False,
+    most_recent: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An open `FIA` database connection. The connection must have been clipped to
+  a GRM evaluation via `db.clip_most_recent(eval_type="GRM")`.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names to group results by. Pass a single string such
+  as `"OWNGRPCD"` or a list such as `["OWNGRPCD", "COUNTYCD"]`. Grouping is
+  applied after all domain filters.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, results are broken out by species code (`SPCD`). Combine with
+  `join_species_names()` to add human-readable common or scientific names to
+  the output.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, results are broken out by diameter size class. The exact
+  class boundaries are controlled by `size_class_type`.
+</ParamField>
+
+<ParamField path="size_class_type" type="str" default='"standard"'>
+  Determines which size-class scheme is applied when `by_size_class=True`.
+  Accepted values:
+
+  - `"standard"` — 2-inch diameter classes (e.g., 5–6.9 in, 7–8.9 in, …)
+  - `"descriptive"` — Named classes: sapling, poletimber, sawtimber
+  - `"market"` — Sawlog vs. non-sawlog based on merchantability thresholds
+</ParamField>
+
+<ParamField path="land_type" type="str" default='"forest"'>
+  Filters to a specific land classification. Common values are `"forest"` and
+  `"timber"` (timberland only, excluding reserved and non-productive forest).
+</ParamField>
+
+<ParamField path="tree_type" type="str" default='"gs"'>
+  Filters to a tree subset. `"gs"` (growing stock) is the default and
+  excludes rough and rotten trees. Use `"all"` to include all live trees.
+</ParamField>
+
+<ParamField path="measure" type="str" default='"volume"'>
+  The unit of growth to estimate. Accepted values:
+
+  - `"volume"` — Net cubic-foot volume (cubic feet per acre / total cubic feet)
+  - `"biomass"` — Above-ground dry biomass (tons per acre / total tons)
+  - `"count"` — Number of trees per acre / total trees
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter expression applied to tree-level attributes before
+  estimation. For example, `"DIA >= 11.0"` restricts growth to trees with
+  DBH of 11 inches or larger.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied to condition-level attributes. For
+  example, `"OWNGRPCD == 40"` restricts results to private land.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, the output includes population-level totals (e.g.,
+  `GROWTH_TOTAL` in cubic feet) in addition to per-acre rates. Set to
+  `False` to return only per-acre estimates.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, the output includes variance columns alongside the standard
+  error columns. Useful for custom variance propagation.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically filters to the most-recent GRM evaluation
+  internally. This is a convenience shortcut; explicit use of
+  `db.clip_most_recent(eval_type="GRM")` gives you finer control.
+</ParamField>
+
+## Usage Examples
+
+```python
+from pyfia import FIA, growth, join_species_names
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="GRM")
+
+    # Annual net growth in cubic feet per acre
+    vol_growth = growth(db, measure="volume")
+
+    # Growth broken out by species, with common names joined
+    by_spp = growth(db, by_species=True, totals=True)
+    by_spp = join_species_names(by_spp, db)
+
+    # Above-ground biomass growth (tons per acre)
+    bio_growth = growth(db, measure="biomass")
+
+    # Growth by market size class (sawlog vs. non-sawlog)
+    by_mkt = growth(db, by_size_class=True, size_class_type="market")
+```
+
+<Tip>
+  Combine `by_species=True` with `tree_domain` to focus on a single species
+  group. For example, `tree_domain="SPGRPCD == 24"` limits results to
+  southern yellow pines while still reporting all other grouping columns.
+</Tip>
+
+## Output Columns
+
+The returned `polars.DataFrame` always includes the following columns. Additional grouping columns (e.g., `SPCD`, `OWNGRPCD`) are appended when `grp_by` or species/size-class flags are used.
+
+| Column | Description |
+|---|---|
+| `GROWTH_ACRE` | Net annual growth per acre (cubic ft, tons, or trees) |
+| `GROWTH_TOTAL` | Population-level total (present when `totals=True`) |
+| `GROWTH_SE` | Standard error of `GROWTH_ACRE` |
+| `GROWTH_TOTAL_SE` | Standard error of `GROWTH_TOTAL` (when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+<Note>
+  Negative `GROWTH_ACRE` values indicate that mortality and harvests exceeded
+  ingrowth and survivor growth during the remeasurement period — a net loss
+  condition worth flagging in any reporting workflow.
+</Note>
+
+## Common Patterns
+
+<Accordion title="Filtering to a specific ownership class">
+  Pass an `area_domain` expression using FIA ownership group codes. Code `10`
+  is National Forest, `20` is other public, and `40` is private.
+
+  ```python
+  nf_growth = growth(db, area_domain="OWNGRPCD == 10", measure="volume")
+  private_growth = growth(db, area_domain="OWNGRPCD == 40", measure="volume")
+  ```
+</Accordion>
+
+<Accordion title="Combining species and size-class breakdowns">
+  You can pass both `by_species=True` and `by_size_class=True` simultaneously.
+  The result will have one row per species–size-class combination.
+
+  ```python
+  detailed = growth(
+      db,
+      by_species=True,
+      by_size_class=True,
+      size_class_type="descriptive",
+      totals=False,
+  )
+  detailed = join_species_names(detailed, db)
+  ```
+</Accordion>
+
+<Accordion title="Restricting to large-diameter growing stock">
+  Use `tree_domain` to target mature timber. DBH thresholds of 9 inches
+  (poletimber) and 11 inches (sawtimber) are common reporting breakpoints.
+
+  ```python
+  sawtimber_growth = growth(
+      db,
+      tree_domain="DIA >= 11.0",
+      measure="volume",
+  )
+  ```
+</Accordion>

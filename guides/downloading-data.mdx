@@ -1,0 +1,176 @@
+---
+title: "Download FIA Data from the USDA DataMart"
+sidebarTitle: "Downloading Data"
+description: "Use pyFIA's download() function to fetch FIA data for any US state directly from the USDA DataMart and convert it to DuckDB format automatically."
+---
+
+The `download()` function is your starting point for any pyFIA workflow. It fetches raw FIA data from the USDA Forest Service DataMart, converts it into an optimized DuckDB database, and caches it locally so repeated analyses are fast. You only need a valid two-letter state abbreviation to get started.
+
+## Function Signature
+
+```python
+download(
+    states: str | list[str],
+    dir: str | Path | None = None,
+    common: bool = True,
+    tables: list[str] | None = None,
+    force: bool = False,
+    show_progress: bool = True,
+    use_cache: bool = True,
+) -> Path
+```
+
+The function returns a `Path` pointing to the resulting DuckDB file on disk. Every subsequent pyFIA function accepts this path (or a `FIA` connection object built from it) as its first argument.
+
+## Basic Usage
+
+<Steps>
+  <Step title="Import the download function">
+    ```python
+    from pyfia import download
+    ```
+  </Step>
+  <Step title="Download a single state">
+    Pass the two-letter postal abbreviation for the state you want. The data is fetched, converted, and stored in the default cache directory (`~/.pyfia/data/`).
+
+    ```python
+    # Rhode Island — smallest state, great for testing
+    db_path = download("RI")
+
+    # Georgia
+    db_path = download("GA")
+    ```
+  </Step>
+  <Step title="Download multiple states into one database">
+    Pass a list of abbreviations to merge several states into a single DuckDB file. pyFIA handles deduplication automatically.
+
+    ```python
+    # Southeast multi-state database
+    db_path = download(["GA", "FL", "SC"])
+    ```
+  </Step>
+  <Step title="Open the database">
+    Pass the returned path to `FIA` to open a connection and begin your analysis.
+
+    ```python
+    from pyfia import FIA
+
+    with FIA(db_path) as db:
+        db.clip_most_recent()
+        # ... run estimators
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Rhode Island (`"RI"`) is the smallest state in the FIA dataset — its TREE table is only a few megabytes. Use it to prototype your analysis before scaling up to larger states.
+</Tip>
+
+## Common Options
+
+<Tabs>
+  <Tab title="Custom directory">
+    By default pyFIA saves downloaded files to `~/.pyfia/data/`. You can point it anywhere on your filesystem.
+
+    ```python
+    # Save to a project-specific folder
+    db_path = download("NC", dir="./data")
+    ```
+  </Tab>
+  <Tab title="Force re-download">
+    If the cache is stale or you want the very latest DataMart snapshot, set `force=True` to bypass the cache and re-fetch everything.
+
+    ```python
+    db_path = download("GA", force=True)
+    ```
+  </Tab>
+  <Tab title="Specific tables only">
+    By default `common=True` pulls the standard set of tables. You can override that by passing an explicit list via `tables`.
+
+    ```python
+    db_path = download("GA", tables=["PLOT", "TREE", "COND"])
+    ```
+  </Tab>
+</Tabs>
+
+## One-Step Download and Connect
+
+The `FIA.from_download()` class method combines downloading and opening into a single call. It is the fastest way to get from zero to running estimators.
+
+```python
+from pyfia import FIA
+
+# Download Georgia data and open a connection in one line
+db = FIA.from_download("GA")
+db.clip_most_recent()
+```
+
+## Common Tables
+
+When `common=True` (the default), pyFIA downloads only the tables required by its built-in estimation functions. This keeps download sizes manageable while covering every standard analysis.
+
+<Accordion title="View the full list of common tables">
+  | Table | Description |
+  |---|---|
+  | `COND` | Condition-level attributes (land class, ownership, forest type) |
+  | `COND_DWM_CALC` | Down woody material condition calculations |
+  | `PLOT` | Plot-level metadata and coordinates |
+  | `PLOTGEOM` | Plot geometry for spatial operations |
+  | `POP_ESTN_UNIT` | Population estimation units |
+  | `POP_EVAL` | Evaluation definitions |
+  | `POP_EVAL_GRP` | Evaluation groups |
+  | `POP_EVAL_TYP` | Evaluation type flags |
+  | `POP_PLOT_STRATUM_ASSGN` | Plot-to-stratum assignments |
+  | `POP_STRATUM` | Stratum-level expansion factors |
+  | `SUBPLOT` | Subplot-level records |
+  | `TREE` | Individual tree measurements |
+  | `TREE_GRM_COMPONENT` | Growth/removal/mortality tree components |
+  | `TREE_GRM_MIDPT` | GRM midpoint records |
+  | `TREE_GRM_BEGIN` | GRM beginning-of-period records |
+  | `SUBP_COND_CHNG_MTRX` | Subplot condition change matrix |
+  | `SEEDLING` | Seedling tally records |
+  | `REF_SPECIES` | Reference species lookup |
+  | `REF_FOREST_TYPE` | Reference forest type lookup |
+  | `REF_STATE` | Reference state lookup |
+</Accordion>
+
+Set `common=False` to download the complete set of FIA tables for a state, which includes dozens of additional auxiliary tables.
+
+## Cache Management
+
+pyFIA stores downloaded databases at `~/.pyfia/data/` by default. The `cache_info()` and `clear_cache()` helpers let you inspect and prune that directory without navigating your filesystem manually.
+
+```python
+from pyfia import cache_info, clear_cache
+
+# Inspect what is currently cached
+info = cache_info()
+print(info)
+
+# Remove cache entries older than 30 days
+clear_cache(older_than_days=30)
+
+# Remove the cache entry for a specific state
+clear_cache(state="GA")
+
+# Remove entries AND delete the DuckDB files from disk
+clear_cache(delete_files=True)
+```
+
+## Error Reference
+
+<CardGroup cols={3}>
+  <Card title="StateNotFoundError" icon="triangle-exclamation">
+    Raised when the abbreviation you provide does not match any known FIA state code. Double-check the two-letter postal abbreviation.
+  </Card>
+  <Card title="NetworkError" icon="wifi">
+    Raised when pyFIA cannot reach the USDA DataMart. Check your internet connection or try again later.
+  </Card>
+  <Card title="TableNotFoundError" icon="table">
+    Raised when a table name you pass via `tables=` does not exist in the DataMart for that state.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Large states such as California (`"CA"`) and Texas (`"TX"`) have TREE tables exceeding 1 GB compressed. Your first download for these states may take several minutes depending on your connection speed. Subsequent runs use the local cache and are nearly instant.
+</Warning>

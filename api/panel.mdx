@@ -1,0 +1,236 @@
+---
+title: "panel(): Build FIA Remeasurement Panel Data"
+sidebarTitle: "panel()"
+description: "panel() creates t1/t2 remeasurement panel data from FIA plots for harvest probability modeling, forest change detection, and transition studies."
+---
+
+The `panel()` function assembles matched pairs of FIA measurements — one from the initial visit (t1) and one from the remeasurement visit (t2) — into a single tidy DataFrame. Unlike the estimation functions such as `tpa()` or `volume()`, `panel()` returns plot- or tree-level microdata rather than population-level statistics, giving you the raw inputs needed for econometric models, machine learning classifiers, and custom transition analyses. Each row in the output represents a unique measurement pair at either the condition or individual tree level.
+
+## Function Signature
+
+```python
+panel(
+    db: FIA,
+    level: str = "condition",
+    columns: list[str] | None = None,
+    land_type: str = "forest",
+    tree_type: str = "gs",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    expand_chains: bool = True,
+    min_remper: float = 0,
+    max_remper: float | None = None,
+    min_invyr: int = 2000,
+    harvest_only: bool = False,
+    expand: bool = False,
+    measure: str = "tpa",
+    grp_by: list[str] | None = None,
+    by_fate: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An open `FIA` database connection. You should call `db.clip_most_recent()`
+  before invoking `panel()` to define the set of evaluations used.
+</ParamField>
+
+<ParamField path="level" type="str" default='"condition"'>
+  The unit of observation in the output. Accepted values:
+
+  - `"condition"` — One row per plot condition pair (t1/t2 condition attributes)
+  - `"tree"` — One row per individual tree measured at both visits (uses GRM
+    tables for authoritative fate classification)
+</ParamField>
+
+<ParamField path="columns" type="list[str] | None" default="None">
+  Specific FIA column names to include in the output. When `None`, a default
+  set of columns appropriate for the chosen `level` is returned. Pass a list
+  to narrow the output for memory efficiency or to pull in less-common
+  attributes.
+</ParamField>
+
+<ParamField path="land_type" type="str" default='"forest"'>
+  Land classification filter applied to both t1 and t2. Use `"timber"` to
+  restrict to productive, unreserved timberland at both time points.
+</ParamField>
+
+<ParamField path="tree_type" type="str" default='"gs"'>
+  Tree subset filter (tree level only). `"gs"` limits results to growing-stock
+  trees; `"all"` includes all live trees regardless of quality class.
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter applied to tree-level attributes at t1. For example,
+  `"DIA >= 5.0"` restricts the panel to trees that were at least 5 inches
+  DBH at the initial measurement.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter applied to condition-level attributes. For example,
+  `"OWNGRPCD == 40"` restricts the panel to conditions on private land.
+</ParamField>
+
+<ParamField path="expand_chains" type="bool" default="true">
+  When `True`, resolves plot replacement chains so that non-standard
+  remeasurement sequences (e.g., plot relocation) are handled correctly.
+  Set to `False` only if you want raw plot pairs without chain resolution.
+</ParamField>
+
+<ParamField path="min_remper" type="float" default="0">
+  Minimum remeasurement period in years. Pairs where t2 − t1 is less than
+  this threshold are excluded. Useful for dropping very short intervals that
+  may reflect administrative remeasurements rather than true growth periods.
+</ParamField>
+
+<ParamField path="max_remper" type="float | None" default="None">
+  Maximum remeasurement period in years. Pairs exceeding this threshold are
+  excluded. Pass a value such as `7.0` to drop unusually long intervals.
+</ParamField>
+
+<ParamField path="min_invyr" type="int" default="2000">
+  Minimum inventory year for t1. Plot pairs where the initial measurement
+  occurred before this year are excluded. The default of 2000 aligns with
+  the modern annual inventory design.
+</ParamField>
+
+<ParamField path="harvest_only" type="bool" default="false">
+  When `True`, returns only plot pairs where at least one harvesting event
+  was recorded between t1 and t2. Use this to build harvest probability
+  models or to study post-harvest stand dynamics.
+</ParamField>
+
+<ParamField path="expand" type="bool" default="false">
+  When `True`, expands tree records by their trees-per-acre expansion factor,
+  producing a weighted dataset suitable for population-level analyses without
+  separate estimation functions.
+</ParamField>
+
+<ParamField path="measure" type="str" default='"tpa"'>
+  The tree-level quantity to attach to each record when `level="tree"`.
+  Accepted values include `"tpa"` (trees per acre), `"volume"` (cubic feet
+  per acre), and `"biomass"` (tons per acre).
+</ParamField>
+
+<ParamField path="grp_by" type="list[str] | None" default="None">
+  Column names by which to aggregate the output before returning. When
+  provided, `panel()` summarizes the microdata rather than returning
+  one row per pair.
+</ParamField>
+
+<ParamField path="by_fate" type="bool" default="false">
+  Tree level only. When `True`, adds a `FATE` column classifying each tree
+  as `"survived"`, `"harvested"`, `"died"`, or `"not_sampled"` based on
+  the GRM component tables. This is the recommended approach for modeling
+  individual tree outcomes.
+</ParamField>
+
+## Usage Examples
+
+```python
+from pyfia import FIA, panel
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Condition-level panel (plot attributes at t1 and t2)
+    cond_panel = panel(db, level="condition")
+
+    # Tree-level panel with fate classification
+    tree_panel = panel(db, level="tree", by_fate=True)
+
+    # Only plots that experienced harvesting
+    harvest = panel(db, harvest_only=True)
+
+    # Custom columns — standing volume and stand age at both visits
+    custom = panel(
+        db,
+        level="condition",
+        columns=["FORTYPCD", "STDAGE", "BALIVE"],
+    )
+```
+
+<Tip>
+  When building a harvest probability model, start with
+  `harvest_only=False` to preserve the full panel (both harvested and
+  un-harvested plots), then create a binary outcome variable from the
+  `HARVEST` indicator column rather than pre-filtering. This avoids
+  unintentional outcome-based sampling.
+</Tip>
+
+## Output Structure
+
+The exact columns returned depend on `level` and `columns`, but the panel always includes the following identifiers and time metadata:
+
+| Column | Description |
+|---|---|
+| `PLT_CN` | Plot control number (unique plot identifier) |
+| `INVYR_T1` | Inventory year of the initial measurement |
+| `INVYR_T2` | Inventory year of the remeasurement |
+| `REMPER` | Remeasurement interval in years (t2 − t1) |
+| `STATECD` | State FIPS code |
+| `COUNTYCD` | County FIPS code |
+
+Condition-level panels include `_T1` and `_T2` suffixed versions of most condition attributes (e.g., `FORTYPCD_T1`, `FORTYPCD_T2`). Tree-level panels include `_T1` and `_T2` suffixed diameter measurements and, when `by_fate=True`, a `FATE` column.
+
+## Common Patterns
+
+<Accordion title="Harvest probability model setup">
+  Assemble the full condition panel, create a binary harvest indicator,
+  and feed the result to a classifier such as `sklearn`'s `RandomForestClassifier`.
+
+  ```python
+  import polars as pl
+  from pyfia import FIA, panel
+
+  with FIA("nc.duckdb") as db:
+      db.clip_by_state(37)
+      db.clip_most_recent()
+
+      df = panel(db, level="condition", columns=["FORTYPCD", "STDAGE", "BALIVE", "OWNGRPCD"])
+
+  # Create binary outcome
+  df = df.with_columns(
+      (pl.col("HARVEST").cast(pl.Int8)).alias("HARVESTED")
+  )
+  ```
+</Accordion>
+
+<Accordion title="Filtering to a specific remeasurement window">
+  Use `min_remper` and `max_remper` to restrict the panel to pairs with
+  remeasurement intervals close to the five-year target.
+
+  ```python
+  standard = panel(db, min_remper=4.0, max_remper=6.5)
+  ```
+</Accordion>
+
+<Accordion title="Tree fate distribution by species">
+  Combine `by_fate=True` with `grp_by` to summarize tree fate proportions
+  by species group.
+
+  ```python
+  fate_by_spp = panel(
+      db,
+      level="tree",
+      by_fate=True,
+      grp_by=["SPGRPCD", "FATE"],
+  )
+  ```
+</Accordion>
+
+<Accordion title="Restricting to trees above a diameter threshold">
+  Apply `tree_domain` to anchor the panel to merchantable-size trees
+  at the time of initial measurement.
+
+  ```python
+  merch = panel(
+      db,
+      level="tree",
+      tree_domain="DIA >= 5.0",
+      by_fate=True,
+  )
+  ```
+</Accordion>

@@ -1,0 +1,158 @@
+---
+title: "Configure pyFIA with Environment Variables"
+sidebarTitle: "Settings"
+description: "Configure pyFIA's database path, engine, performance settings, caching, and logging using PYFIA_ environment variables or the PyFIASettings class."
+---
+
+pyFIA uses a `PyFIASettings` class — backed by [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) — to manage all runtime configuration. You can supply values through environment variables prefixed with `PYFIA_`, a `.env` file in your working directory, or by setting attributes programmatically on the shared `settings` instance. This means you never have to hard-code paths or tune performance knobs inside your scripts.
+
+## Environment Variables Reference
+
+The table below lists every recognized variable, its default value, and what it controls. All variables use the `PYFIA_` prefix. Two legacy names (`FIA_DB_PATH` and `FIA_DB_ENGINE`) remain supported for backwards compatibility.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PYFIA_DATABASE_PATH` | `fia.duckdb` | Path to the FIA database file on disk |
+| `PYFIA_DATABASE_ENGINE` | `duckdb` | Query engine to use: `duckdb` or `sqlite` |
+| `PYFIA_MAX_THREADS` | `4` | Number of threads for parallel processing (1–32) |
+| `PYFIA_CHUNK_SIZE` | `10000` | Batch size when processing data in chunks |
+| `PYFIA_CACHE_ENABLED` | `true` | Enable or disable the download cache |
+| `PYFIA_CACHE_DIR` | `~/.pyfia/cache` | Directory where cached downloads are stored |
+| `PYFIA_DOWNLOAD_DIR` | `~/.pyfia/data` | Directory where downloaded FIA data files land |
+| `PYFIA_DOWNLOAD_TIMEOUT` | `300` | Seconds before a download attempt times out |
+| `PYFIA_DOWNLOAD_MAX_RETRIES` | `3` | Maximum number of retry attempts for failed downloads |
+| `PYFIA_LOG_LEVEL` | `CRITICAL` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `PYFIA_LOG_DIR` | `~/.pyfia/logs` | Directory where pyFIA writes log files |
+
+<Note>
+  The legacy variables `FIA_DB_PATH` and `FIA_DB_ENGINE` map to `PYFIA_DATABASE_PATH` and `PYFIA_DATABASE_ENGINE` respectively. New projects should use the `PYFIA_` prefix.
+</Note>
+
+## Setting Variables in the Shell or a .env File
+
+The most portable approach is to export variables in your shell before running any Python code. Alternatively, you can place them in a `.env` file at your project root and pyFIA will load them automatically at import time.
+
+<Tabs>
+  <Tab title="Shell export">
+    ```bash
+    export PYFIA_DATABASE_PATH=/data/fia_southeast.duckdb
+    export PYFIA_MAX_THREADS=8
+    export PYFIA_LOG_LEVEL=INFO
+    ```
+  </Tab>
+  <Tab title=".env file">
+    ```bash
+    PYFIA_DATABASE_PATH=/data/fia_southeast.duckdb
+    PYFIA_MAX_THREADS=8
+    PYFIA_DOWNLOAD_DIR=/data/fia
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Place your `.env` file in the directory from which you run Python (typically your project root). pyFIA reads it once at import time, so changes made after `import pyfia` will not be reflected until you restart the interpreter.
+</Tip>
+
+## Programmatic Configuration
+
+If you need to adjust settings at runtime — for example, inside a notebook where you cannot set shell variables — you can read or write attributes directly on the `settings` singleton that pyFIA exports.
+
+```python
+from pyfia import settings
+
+# Inspect current values
+print(settings.database_path)   # e.g. "fia.duckdb"
+print(settings.max_threads)     # e.g. 4
+
+# Override values for the current session
+settings.max_threads = 8
+settings.log_level = "INFO"
+```
+
+Changes to the `settings` object take effect immediately for subsequent calls. They do not persist across Python sessions — use environment variables or a `.env` file for permanent configuration.
+
+## Using PyFIASettings Directly
+
+If you are building a tool on top of pyFIA that needs its own isolated configuration, you can instantiate `PyFIASettings` directly rather than mutating the global `settings` object.
+
+```python
+from pyfia import PyFIASettings
+
+# Create a fully independent settings instance
+my_settings = PyFIASettings(
+    database_path="/data/fia.duckdb",
+    max_threads=8,
+    log_level="DEBUG",
+)
+
+print(my_settings.cache_dir)    # still inherits the default: ~/.pyfia/cache
+print(my_settings.max_threads)  # 8
+```
+
+<Note>
+  Constructing a `PyFIASettings` instance does **not** affect the global `settings` singleton. Pass your custom instance explicitly to the parts of your application that need it.
+</Note>
+
+## Quick Start with get_fia()
+
+The `get_fia()` helper reads `PYFIA_DATABASE_PATH` and `PYFIA_DATABASE_ENGINE` from the environment (or the global `settings` object) and returns a ready-to-use `FIA` instance. This is the fastest way to open a database without writing any boilerplate.
+
+```python
+from pyfia import get_fia
+
+# Picks up PYFIA_DATABASE_PATH and PYFIA_DATABASE_ENGINE automatically
+db = get_fia()
+db.clip_most_recent()
+```
+
+<Steps>
+  <Step title="Set your database path">
+    Export `PYFIA_DATABASE_PATH` pointing to your local `.duckdb` file, or add it to your `.env` file.
+  </Step>
+  <Step title="Optionally tune performance">
+    Set `PYFIA_MAX_THREADS` to the number of CPU cores you want pyFIA to use. The default of `4` is conservative; many laptops and workstations handle `8` or more comfortably.
+  </Step>
+  <Step title="Enable debug logging if needed">
+    Set `PYFIA_LOG_LEVEL=DEBUG` and check `PYFIA_LOG_DIR` to trace slow queries or unexpected results during development.
+  </Step>
+  <Step title="Call get_fia() and start querying">
+    Import `get_fia`, call it once, and then use the returned `FIA` object with any clip or estimator function.
+  </Step>
+</Steps>
+
+## Common Configurations
+
+<CardGroup cols={2}>
+  <Card title="High-performance workstation" icon="bolt">
+    ```bash
+    PYFIA_MAX_THREADS=16
+    PYFIA_CHUNK_SIZE=50000
+    PYFIA_LOG_LEVEL=WARNING
+    ```
+  </Card>
+  <Card title="Shared server / CI environment" icon="server">
+    ```bash
+    PYFIA_MAX_THREADS=2
+    PYFIA_DOWNLOAD_DIR=/mnt/shared/fia
+    PYFIA_CACHE_ENABLED=false
+    ```
+  </Card>
+  <Card title="Development & debugging" icon="bug">
+    ```bash
+    PYFIA_LOG_LEVEL=DEBUG
+    PYFIA_DOWNLOAD_TIMEOUT=60
+    PYFIA_DOWNLOAD_MAX_RETRIES=1
+    ```
+  </Card>
+  <Card title="Notebook / interactive" icon="book-open">
+    ```python
+    from pyfia import settings
+    settings.max_threads = 4
+    settings.log_level = "INFO"
+    ```
+  </Card>
+</CardGroup>
+
+<Warning>
+  Setting `PYFIA_MAX_THREADS` higher than the number of physical CPU cores on your machine can decrease performance due to thread contention. Start with a value equal to your core count and tune from there.
+</Warning>

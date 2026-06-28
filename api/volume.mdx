@@ -1,0 +1,202 @@
+---
+title: "volume(): Estimate Merchantable Timber Volume"
+sidebarTitle: "volume()"
+description: "volume() estimates cubic foot and board foot timber volume from FIA data. Supports net, gross, sound, and sawlog volume types with full stratified estimation."
+---
+
+The `volume()` function produces design-based estimates of merchantable timber volume from FIA data. Whether you are preparing a timber inventory summary, modeling forest carbon, or supporting harvest planning, `volume()` gives you a statistically rigorous per-acre and total volume figure with associated standard errors. You can choose among four volume definitions — net, gross, sound, and sawlog board feet — and stratify results by species, diameter size class, or any tree- or condition-level attribute.
+
+## Function Signature
+
+```python
+volume(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    land_type: str = "forest",
+    tree_type: str = "live",
+    vol_type: str = "net",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    plot_domain: str | None = None,
+    totals: bool = True,
+    variance: bool = False,
+    most_recent: bool = False,
+    eval_type: str | None = None,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An active `FIA` database connection. Call `clip_by_state()` and `clip_most_recent()` on the object before passing it to `volume()` to ensure the correct evaluation is in scope.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to group results. Pass a single string such as `"FORTYPCD"` or a list like `["OWNGRPCD", "SPCD"]`. When `None`, returns a single statewide aggregate volume estimate.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, automatically adds `SPCD` (FIA species code) to the grouping. Use `join_species_names()` on the result to attach human-readable labels.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, groups results into standard 2-inch diameter size classes derived from the `DIA` column.
+</ParamField>
+
+<ParamField path="land_type" type="str" default="forest">
+  Restricts the denominator area to a specific land classification:
+
+  - `"forest"` — All forest land
+  - `"timber"` — Productive, unreserved timberland only
+  - `"all"` — All sampled land
+</ParamField>
+
+<ParamField path="tree_type" type="str" default="live">
+  Filters which trees contribute to the volume estimate:
+
+  - `"live"` — Live trees only (default)
+  - `"dead"` — Standing dead trees
+  - `"gs"` — Growing stock (live, merchantable, on timberland)
+  - `"all"` — All sampled trees
+</ParamField>
+
+<ParamField path="vol_type" type="str" default="net">
+  Selects the volume definition and corresponding FIA source column:
+
+  - `"net"` — Net merchantable cubic feet (`VOLCFNET`). Deducts volume lost to defect, decay, and damage.
+  - `"gross"` — Gross cubic feet (`VOLCFGRS`). Total stem cubic volume without deductions.
+  - `"sound"` — Sound cubic feet (`VOLCFSND`). Gross volume minus rotten and missing wood only.
+  - `"sawlog"` — Sawlog board feet net (`VOLBFNET`). Board-foot volume in the sawlog portion of the bole, net of defect.
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter expression referencing columns in the FIA `TREE` table. Applied after the `tree_type` filter. Use this to target specific species groups, diameter thresholds, or merchantability classes. Example: `"SPGRPCD < 30"` for softwood species groups.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the condition level (`COND` table). Restricts the forest conditions counted in the denominator area. Example: `"OWNGRPCD == 10"` limits the base to National Forest land.
+</ParamField>
+
+<ParamField path="plot_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the plot level (`PLOT` table) before estimation. Use this for spatial subsetting or to exclude specific plot types.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, includes `VOL_TOTAL` and `VOL_TOTAL_SE` columns with population-level total volume. Defaults to `True` for volume because raw totals (in billions of cubic feet) are frequently the primary reporting metric.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, exposes intermediate variance components for custom uncertainty propagation or methodological review.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically filters to the most recent evaluation for each state, equivalent to calling `db.clip_most_recent()`.
+</ParamField>
+
+<ParamField path="eval_type" type="str | None" default="None">
+  Specifies the evaluation type explicitly. Volume estimation uses `"VOL"` evaluations by default. You rarely need to set this when `clip_by_state()` has already been called.
+</ParamField>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Volume">
+    ```python
+    from pyfia import FIA, volume
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Net merchantable cubic-foot volume (default)
+        net_vol = volume(db)
+
+        # Sawlog board-foot volume on timberland
+        sawlog = volume(db, vol_type="sawlog", land_type="timber")
+    ```
+  </Tab>
+  <Tab title="Species Breakdown">
+    ```python
+    from pyfia import FIA, volume, join_species_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Net volume by species with population totals
+        by_spp = volume(db, by_species=True, totals=True)
+        by_spp = join_species_names(by_spp, db)
+
+        print(by_spp.sort("VOL_TOTAL", descending=True).head(10))
+    ```
+  </Tab>
+  <Tab title="Custom Domains">
+    ```python
+    from pyfia import FIA, volume, join_forest_type_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Softwood growing stock on timberland
+        softwood = volume(
+            db,
+            tree_type="gs",
+            land_type="timber",
+            tree_domain="SPGRPCD < 30"  # softwood species groups
+        )
+
+        # Volume by 2-inch size class
+        by_size = volume(db, by_size_class=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Output Columns
+
+| Column | Description |
+|---|---|
+| `VOL_ACRE` | Volume per acre in cubic feet (or board feet when `vol_type="sawlog"`) |
+| `VOL_TOTAL` | Total volume across the population (only when `totals=True`) |
+| `VOL_SE` | Standard error of `VOL_ACRE` |
+| `VOL_TOTAL_SE` | Standard error of the total estimate (only when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+Any columns listed in `grp_by`, plus `SPCD` if `by_species=True` and `SIZE_CLASS` if `by_size_class=True`, appear as leading identifier columns.
+
+## Choosing a Volume Type
+
+The four volume types correspond to different points along the deduction chain from a tree's gross bole wood to the merchantable product you can sell:
+
+```
+VOLCFGRS  (gross cubic feet)
+  └─ minus rotten/missing wood
+     = VOLCFSND  (sound cubic feet)
+        └─ minus defect/damage deductions
+           = VOLCFNET  (net cubic feet)  ← default
+
+VOLBFNET  (board feet, sawlog portion, net of defect)
+```
+
+<Note>
+  Board-foot volume (`vol_type="sawlog"`) is only populated for trees that meet FIA's sawlog merchantability standards — generally hardwoods ≥ 11.0 in DBH and softwoods ≥ 9.0 in DBH with a merchantable sawlog. Trees below these thresholds have `VOLBFNET = 0` and do not contribute to the board-foot estimate.
+</Note>
+
+<Accordion title="Net vs. Gross Volume: When to Use Each">
+  Use **net volume** (`vol_type="net"`) for most timber management and inventory reporting tasks. Net volume reflects what is actually merchantable after accounting for rot, cracks, and damage, and it matches the figures published in standard FIA EVALIDator summaries.
+
+  Use **gross volume** (`vol_type="gross"`) when you are modelling total biomass or carbon storage and want to avoid excluding wood that still represents sequestered carbon, even if it is not commercially usable.
+
+  Use **sound volume** (`vol_type="sound"`) when working with decay-class analyses or research on wood products recovery, where the distinction between physically sound and merchantable wood matters.
+</Accordion>
+
+<Tip>
+  To reproduce standard FIA EVALIDator volume tables, set `tree_type="gs"`, `land_type="timber"`, and `vol_type="net"`. This matches the "Growing-stock volume on timberland" definition that appears in most published state-level FIA summaries.
+</Tip>
+
+<Warning>
+  Gross volume (`VOLCFGRS`) includes the stump and tip of the bole and therefore exceeds net merchantable volume for every tree. Do not use gross volume figures when comparing to market or harvest data, which are invariably based on net or scaled volume.
+</Warning>

@@ -1,0 +1,137 @@
+---
+title: "Understanding USDA FIA Forest Inventory Data"
+sidebarTitle: "FIA Data"
+description: "FIA data covers all US forest land through a systematic sampling design. Learn what tables pyFIA uses and how the data is structured."
+---
+
+The USDA Forest Service's Forest Inventory and Analysis (FIA) program is the nation's continuous forest census, monitoring everything from individual tree species and sizes to soil conditions across all US forest land. FIA collects data through a systematic sampling design that places approximately one plot every 6,000 acres, giving you statistically rigorous estimates at the state, regional, or national level. pyFIA gives you direct programmatic access to this dataset without needing to navigate the official web tools.
+
+## The Three-Phase Sampling Design
+
+FIA organizes its field work into three nested phases, each adding a layer of detail to the previous one.
+
+<Steps>
+  <Step title="Phase 1 — Remote Sensing Stratification">
+    Satellite and aerial imagery classify land cover across the entire country. This stratification step improves the precision of later estimates by grouping similar areas together before field crews ever visit a site.
+  </Step>
+  <Step title="Phase 2 — Field Plot Measurements">
+    Ground crews visit a subset of Phase 1 locations and record tree species, diameter, height, condition class, and dozens of other variables. Phase 2 plots are the core of FIA data and the source of most estimates you will generate with pyFIA.
+  </Step>
+  <Step title="Phase 3 — Enhanced Measurements">
+    A further subset of Phase 2 plots receives expanded measurements including crown condition, understory vegetation, downed woody debris, and soil sampling. Phase 3 data supports analyses of ecosystem health and carbon accounting.
+  </Step>
+</Steps>
+
+## Key Tables Used by pyFIA
+
+pyFIA reads from a curated set of FIA tables that cover plot locations, individual trees, forest conditions, and the population estimation infrastructure needed for statistically valid results.
+
+<CardGroup cols={2}>
+  <Card title="PLOT" icon="map-pin">
+    Plot-level location attributes including state, county, measurement year, and land use classification. Every other table links back to PLOT through `PLT_CN`.
+  </Card>
+  <Card title="TREE" icon="tree">
+    Individual tree records — the largest table in the database. Contains species code, diameter, height, status, and per-tree expansion factors for every sampled stem.
+  </Card>
+  <Card title="COND" icon="layer-group">
+    Forest condition attributes recorded for each distinct condition present on a plot, such as forest type, stand size class, and ownership group. A single plot can have multiple COND records.
+  </Card>
+  <Card title="Population Tables" icon="chart-bar">
+    `POP_STRATUM`, `POP_ESTN_UNIT`, and `POP_PLOT_STRATUM_ASSGN` store the strata weights and expansion factors that translate plot measurements into population-level estimates.
+  </Card>
+  <Card title="GRM Tables" icon="arrows-rotate">
+    `TREE_GRM_COMPONENT` and `TREE_GRM_MIDPT` support Growth, Removal, and Mortality estimation. These tables record midpoint tree attributes and the components of change between two inventory cycles.
+  </Card>
+  <Card title="Reference Tables" icon="book">
+    `REF_SPECIES`, `REF_FOREST_TYPE`, and `REF_STATE` are lookup tables that decode numeric codes into human-readable labels. Use `join_species_names()` and `join_forest_type_names()` to attach these labels to your results.
+  </Card>
+</CardGroup>
+
+## Getting FIA Data
+
+FIA data is distributed through the USDA DataMart as state-level SQLite databases. pyFIA's `download()` function fetches and converts these files into a local DuckDB database that pyFIA can query efficiently.
+
+```python
+from pyfia import download
+
+# Download North Carolina FIA data to a local DuckDB file
+download(states=["NC"], output_path="nc.duckdb")
+```
+
+Once you have a local file, you open it with the `FIA` context manager:
+
+```python
+from pyfia import FIA
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    result = db.tpa()
+    print(result)
+```
+
+<Tip>
+  DuckDB files are column-oriented and compressed, so a state like North Carolina typically occupies 200–400 MB on disk — far smaller than the raw SQLite downloads.
+</Tip>
+
+## Common FIA Codes
+
+FIA uses numeric codes throughout its tables. The following are the ones you will encounter most often when filtering and interpreting pyFIA output.
+
+<Accordion title="STATECD — State FIPS Code">
+  Every FIA record carries a state Federal Information Processing Standard (FIPS) code. For example, `STATECD=37` is North Carolina and `STATECD=06` is California. pyFIA's `clip_by_state()` accepts FIPS codes directly.
+</Accordion>
+
+<Accordion title="SPCD — Species Code">
+  FIA assigns a unique numeric code to each tree species (e.g., `SPCD=316` is loblolly pine). Rather than memorizing these codes, call `join_species_names()` on your results to append a `COMMON_NAME` and `SCIENTIFIC_NAME` column automatically.
+
+  ```python
+  result = db.tpa(by_species=True)
+  result = db.join_species_names(result)
+  print(result[["SPCD", "COMMON_NAME", "TPA_UNADJ"]])
+  ```
+</Accordion>
+
+<Accordion title="FORTYPCD — Forest Type Code">
+  Forest type codes identify stand composition classes such as loblolly-shortleaf pine (161) or oak-hickory (500). Use `join_forest_type_names()` to decode them:
+
+  ```python
+  result = db.tpa(by_forest_type=True)
+  result = db.join_forest_type_names(result)
+  ```
+</Accordion>
+
+<Accordion title="OWNGRPCD — Ownership Group Code">
+  Ownership group codes classify who controls the land:
+
+  | Code | Description |
+  |------|-------------|
+  | 10 | National Forest |
+  | 20 | Other Federal |
+  | 30 | State and Local Government |
+  | 40 | Private |
+
+  Pass `OWNGRPCD` as a domain filter to restrict estimates to a specific ownership class.
+</Accordion>
+
+<Accordion title="STATUSCD — Tree Status Code">
+  Every tree record has a status code indicating whether the tree was alive or dead at measurement time:
+
+  | Code | Description |
+  |------|-------------|
+  | 1 | Live tree |
+  | 2 | Dead tree (standing snag) |
+
+  By default, most pyFIA estimators include only live trees (`STATUSCD=1`). Set `tree_domain="STATUSCD=2"` to target standing dead trees.
+</Accordion>
+
+<Accordion title="COND_STATUS_CD — Land Classification">
+  The condition status code on the COND table identifies whether a plot condition meets FIA's definition of forest land. `COND_STATUS_CD=1` means the condition is classified as forest land — the standard filter applied in most estimates. Non-forest conditions (codes 2–5) represent non-forest land uses such as agriculture or developed land.
+</Accordion>
+
+## A Note on Plot Coordinates
+
+FIA plot coordinates in the PLOT table are intentionally fuzzed by up to one mile from their true location to protect landowner privacy. This means you can use coordinates for broad geographic analyses — such as clipping to a watershed or ecoregion — but you should not rely on them for precise site-level work or to visit a specific plot location.
+
+<Note>
+  The coordinate fuzzing applies to the publicly available data. Researchers with an approved data use agreement can apply for access to exact coordinates through the FIA national office.
+</Note>

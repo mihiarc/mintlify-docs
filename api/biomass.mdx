@@ -1,0 +1,197 @@
+---
+title: "biomass(): Estimate Forest Biomass and Carbon"
+sidebarTitle: "biomass()"
+description: "biomass() estimates above and belowground dry weight biomass in tons per acre from FIA data, including stem, branch, foliage, root, and total components."
+---
+
+The `biomass()` function estimates dry-weight biomass stored in forest trees using component-based equations applied to FIA tree records. You can compute total aboveground biomass, belowground root biomass, or individual structural components such as the main bole, branches, foliage, or stump. Results are expressed in dry tons per acre and optionally as population-level totals, making `biomass()` suitable for carbon accounting, ecosystem service valuations, and reporting against national greenhouse-gas inventories.
+
+## Function Signature
+
+```python
+biomass(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    land_type: str = "forest",
+    tree_type: str = "live",
+    component: str = "AG",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    plot_domain: str | None = None,
+    totals: bool = True,
+    variance: bool = False,
+    most_recent: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An active `FIA` database connection. Call `clip_by_state()` and `clip_most_recent()` on the object before passing it to `biomass()` to ensure the correct evaluation is in scope.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to group results. Pass a single string such as `"FORTYPCD"` or a list like `["OWNGRPCD", "SPCD"]`. When `None`, returns a single statewide aggregate biomass estimate.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, automatically adds `SPCD` (FIA species code) to the grouping. Use `join_species_names()` on the result to attach common and scientific names.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, groups results into standard 2-inch diameter size classes. Size classes are derived from the `DIA` column and appended automatically.
+</ParamField>
+
+<ParamField path="land_type" type="str" default="forest">
+  Restricts the denominator area to a specific land classification:
+
+  - `"forest"` — All forest land
+  - `"timber"` — Productive, unreserved timberland only
+  - `"all"` — All sampled land
+</ParamField>
+
+<ParamField path="tree_type" type="str" default="live">
+  Filters which trees contribute to the biomass estimate:
+
+  - `"live"` — Live trees only (default)
+  - `"dead"` — Standing dead trees (snags)
+  - `"gs"` — Growing stock
+  - `"all"` — All sampled trees
+</ParamField>
+
+<ParamField path="component" type="str" default="AG">
+  Specifies which biomass component to estimate. Each component maps to a distinct set of FIA columns derived from Jenkins et al. (2003) and updated component-ratio equations:
+
+  - `"AG"` — Aboveground biomass: the sum of stem wood, stem bark, live branches, and foliage. This is the default and most commonly reported value.
+  - `"BG"` — Belowground biomass: coarse root biomass estimated as a fraction of aboveground biomass using species-specific root-to-shoot ratios.
+  - `"TOTAL"` — Total biomass: `AG + BG`, the full tree dry weight.
+  - `"BOLE"` — Main stem wood and bark from the stump to the merchantable top.
+  - `"BRANCH"` — Live and dead branch biomass attached to the crown.
+  - `"FOLIAGE"` — Current-year leaves or needles.
+  - `"STUMP"` — Stump wood and bark below the standard 1-foot measurement height.
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter expression referencing columns in the FIA `TREE` table. Use this to target specific species, diameter ranges, or crown classes. Example: `"SPGRPCD < 30"` for softwood species groups.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the condition level (`COND` table). Restricts the forest conditions included in the denominator area.
+</ParamField>
+
+<ParamField path="plot_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the plot level (`PLOT` table) before estimation. Use this for spatial subsetting or exclusion of specific plot types.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, includes `BIO_TOTAL` and `BIO_TOTAL_SE` columns with population-level total biomass in dry tons. Defaults to `True` because aggregate totals are frequently the primary output for carbon accounting.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, exposes intermediate variance components for custom uncertainty propagation or methodological audits.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically filters to the most recent evaluation for each state, equivalent to calling `db.clip_most_recent()`.
+</ParamField>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Biomass">
+    ```python
+    from pyfia import FIA, biomass
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Aboveground biomass (default component)
+        ag = biomass(db, component="AG")
+
+        # Total biomass (aboveground + belowground roots)
+        total = biomass(db, component="TOTAL")
+    ```
+  </Tab>
+  <Tab title="Species Breakdown">
+    ```python
+    from pyfia import FIA, biomass, join_species_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Total biomass by species with population totals
+        by_spp = biomass(db, by_species=True, totals=True)
+        by_spp = join_species_names(by_spp, db)
+
+        print(by_spp.sort("BIO_TOTAL", descending=True).head(10))
+    ```
+  </Tab>
+  <Tab title="Custom Domains">
+    ```python
+    from pyfia import FIA, biomass
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Softwood biomass only
+        softwood = biomass(db, tree_domain="SPGRPCD < 30")
+
+        # Total biomass with population-level tons
+        with_totals = biomass(db, component="TOTAL", totals=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Output Columns
+
+| Column | Description |
+|---|---|
+| `BIO_ACRE` | Biomass per acre in dry tons |
+| `BIO_TOTAL` | Total biomass across the population in dry tons (only when `totals=True`) |
+| `BIO_SE` | Standard error of `BIO_ACRE` |
+| `BIO_TOTAL_SE` | Standard error of the total estimate (only when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+Any columns listed in `grp_by`, plus `SPCD` if `by_species=True` and `SIZE_CLASS` if `by_size_class=True`, appear as leading identifier columns.
+
+## Biomass Components Reference
+
+The diagram below shows how components relate to one another within the tree:
+
+```
+TOTAL biomass
+├── AG  (aboveground)
+│   ├── BOLE    (stem wood + bark)
+│   ├── BRANCH  (live and dead branches)
+│   ├── FOLIAGE (leaves / needles)
+│   └── STUMP   (stump wood + bark)
+└── BG  (belowground — coarse roots)
+```
+
+<Note>
+  Carbon content is approximately **50% of dry biomass** for most temperate tree species, a ratio widely used in national greenhouse-gas inventories. To convert `BIO_ACRE` or `BIO_TOTAL` to carbon equivalents, multiply by `0.5`. For precise per-species carbon fractions, refer to the species-specific values in the IPCC Guidelines for National Greenhouse Gas Inventories.
+</Note>
+
+<Accordion title="Methodology: Jenkins vs. Component-Ratio Equations">
+  FIA biomass estimates are derived from two complementary sets of equations:
+
+  **Jenkins et al. (2003)** provide national-scale allometric equations that predict total aboveground biomass from DBH alone, using species-group parameters. These equations are simple, broadly applicable, and used in many large-scale assessments.
+
+  **Component-ratio equations** (Waddell & Hiserote 2005; updated periodically) apply species-specific ratios to disaggregate total biomass into structural components (bole, branch, foliage, roots). These are the equations underlying the individual `DRYBIO_*` columns stored in the FIA `TREE` table and used by pyFIA.
+
+  pyFIA uses the component-ratio values stored directly in the database rather than re-computing Jenkins equations, so results will match EVALIDator outputs precisely.
+</Accordion>
+
+<Tip>
+  When comparing biomass results across states or time periods, always use the same `component` value. Aboveground (`"AG"`) biomass is the standard for most comparisons because belowground estimates carry higher uncertainty due to limited root sampling in the FIA design.
+</Tip>
+
+<Warning>
+  Standing dead trees (`tree_type="dead"`) retain structural biomass but have reduced carbon storage as decomposition proceeds. FIA's decay-class adjustments are applied to snag biomass, but the dead-tree biomass figures represent structural dry weight rather than stable carbon stocks. Consult forest carbon accounting guidelines before mixing live and dead biomass in a single sequestration estimate.
+</Warning>

@@ -1,0 +1,476 @@
+---
+title: "FIA Class: Connect and Filter Forest Inventory Data"
+sidebarTitle: "FIA Class"
+description: "The FIA class is pyFIA's main database interface. Use it to connect to local DuckDB files, filter by state or EVALID, clip to polygons, and run raw SQL queries."
+---
+
+The `FIA` class is the central object you interact with in pyFIA. It wraps a DuckDB (or SQLite) database containing USDA Forest Inventory and Analysis data and exposes methods for filtering plots by state, evaluation cycle, or spatial boundary — as well as running raw SQL queries against the underlying tables. Most workflows begin by constructing an `FIA` instance, applying one or more clip/filter calls, and then passing the object to an estimation function such as `tpa` or `area`.
+
+---
+
+## Constructor
+
+### `FIA(db_path, engine=None)`
+
+Creates a new `FIA` connection to a local database file or a MotherDuck cloud database.
+
+<ParamField path="db_path" type="str" required>
+  Path to a local DuckDB or SQLite file, or a MotherDuck connection string of the form `"md:database_name"`. When using MotherDuck, ensure your `motherduck_token` environment variable is set before constructing the instance.
+</ParamField>
+
+<ParamField path="engine" type="str | None" default="None">
+  Database engine to use. Accepts `"duckdb"`, `"sqlite"`, or `None`. When `None`, pyFIA auto-detects the engine from the file extension (`.duckdb` → DuckDB, `.db` / `.sqlite` → SQLite).
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  A connected `FIA` instance with no filters applied. Call `clip_by_state`, `clip_most_recent`, or another filter method before passing the instance to an estimator.
+</ResponseField>
+
+Using `FIA` as a context manager is the recommended pattern because it guarantees the database connection is closed when the block exits, even if an exception is raised.
+
+```python
+from pyfia import FIA
+
+# Local DuckDB file (most common)
+db = FIA("path/to/data.duckdb")
+
+# Use as context manager (recommended)
+with FIA("data.duckdb") as db:
+    db.clip_most_recent()
+    ...
+
+# MotherDuck cloud database
+with FIA("md:my_fia_db") as db:
+    db.clip_by_state(37)
+    ...
+```
+
+<Tip>
+  Always prefer the `with` statement over manual construction. If you construct `FIA` directly, call `db.close()` when you are finished to release the connection.
+</Tip>
+
+---
+
+## Class Methods
+
+### `FIA.from_download(states, dir=None, common=True, tables=None, force=False, show_progress=True)`
+
+Downloads FIA data for one or more states and returns a ready-to-use connected `FIA` instance. This is a convenience wrapper around `download()` followed by `FIA()`.
+
+<ParamField path="states" type="str | list[str]" required>
+  Two-letter state abbreviation(s) to download, e.g. `"GA"` or `["GA", "FL", "SC"]`.
+</ParamField>
+
+<ParamField path="dir" type="str | Path | None" default="None">
+  Directory where the DuckDB file will be saved. Defaults to `~/.pyfia/data/`.
+</ParamField>
+
+<ParamField path="common" type="bool" default="True">
+  When `True`, only downloads the tables required by pyFIA's built-in estimators. Set to `False` to fetch the full FIA DataMart table set for a state.
+</ParamField>
+
+<ParamField path="tables" type="list[str] | None" default="None">
+  Explicit list of table names to download. When provided, this overrides the `common` flag.
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  Re-download even if a cached copy of the data already exists on disk.
+</ParamField>
+
+<ParamField path="show_progress" type="bool" default="True">
+  Display download progress bars in the terminal.
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  A connected `FIA` instance pointing to the downloaded database, with no filters applied yet.
+</ResponseField>
+
+```python
+from pyfia import FIA
+
+# Download a single state and get a connected instance
+db = FIA.from_download("GA")
+
+# Download multiple states merged into one database
+db = FIA.from_download(["GA", "FL", "SC"])
+
+# Save to a custom directory
+db = FIA.from_download("NC", dir="./data")
+```
+
+---
+
+## Filter Methods
+
+Filter methods narrow the scope of all subsequent table loads and estimator calls. They all return `self`, so you can chain them in a single expression.
+
+### `clip_by_state(state, most_recent=True, eval_type="ALL")`
+
+Filters the database to one or more US states identified by FIPS code. After filtering, pyFIA automatically resolves the appropriate EVALID values for those states.
+
+<ParamField path="state" type="int | list[int]" required>
+  Numeric FIPS code(s) for the state(s) to include. For example, `37` for North Carolina, `45` for South Carolina, and `13` for Georgia.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="True">
+  When `True`, only the most recent evaluation cycle for each state is selected. Set to `False` to include all available evaluations.
+</ParamField>
+
+<ParamField path="eval_type" type="str" default='"ALL"'>
+  Evaluation type filter. Common values are `"VOL"` (volume), `"GRM"` (growth/removals/mortality), `"DWM"` (down woody material), and `"ALL"` to include every type.
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  `self`, enabling method chaining.
+</ResponseField>
+
+```python
+from pyfia import FIA, tpa
+
+with FIA("data.duckdb") as db:
+    # Single state — North Carolina
+    db.clip_by_state(37)
+
+    # Multiple states — NC, SC, GA
+    db.clip_by_state([37, 45, 13])
+
+    # Chain directly into an estimator
+    result = tpa(db.clip_by_state(37))
+```
+
+---
+
+### `clip_most_recent(eval_type="VOL")`
+
+Selects the most recent evaluation of the given type across all states present in the database. Use this when you want a current snapshot of forest conditions without specifying a particular state.
+
+<ParamField path="eval_type" type="str" default='"VOL"'>
+  Type of evaluation to retrieve. Use `"VOL"` for standing timber volume estimates, `"GRM"` for growth/removals/mortality, or `"DWM"` for down woody material.
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  `self`, enabling method chaining.
+</ResponseField>
+
+<Warning>
+  Raises `NoEVALIDError` if no evaluations matching `eval_type` are found in the database. Ensure the database contains data for your target state before calling this method.
+</Warning>
+
+```python
+from pyfia import FIA, area
+
+with FIA("data.duckdb") as db:
+    # Most recent VOL evaluation (default)
+    db.clip_most_recent()
+
+    # Most recent GRM evaluation for mortality/growth/removals
+    db.clip_most_recent(eval_type="GRM")
+
+    # Chain with a state filter
+    result = area(db.clip_by_state(37).clip_most_recent(eval_type="VOL"))
+```
+
+---
+
+### `clip_by_evalid(evalid)`
+
+Pins the database to one or more specific EVALID values. Use this when you need reproducible results tied to a known evaluation cycle rather than "most recent."
+
+<ParamField path="evalid" type="int | list[int]" required>
+  A single EVALID integer or a list of EVALIDs. EVALIDs are seven-digit codes that encode the state FIPS, year, and evaluation type (e.g. `372301` for North Carolina's 2023 VOL evaluation).
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  `self`, enabling method chaining.
+</ResponseField>
+
+```python
+from pyfia import FIA, tpa
+
+with FIA("data.duckdb") as db:
+    # Single evaluation
+    db.clip_by_evalid(372301)
+
+    # Multiple evaluations (e.g., multi-state)
+    db.clip_by_evalid([372301, 452301])
+
+    result = tpa(db)
+```
+
+<Note>
+  You can find valid EVALIDs for your database using `find_evalid()`. Passing an EVALID that does not exist in the database raises `InvalidEVALIDError`.
+</Note>
+
+---
+
+### `find_evalid(most_recent=True, state=None, year=None, eval_type=None)`
+
+Searches the database for EVALID values matching the given criteria without applying them as a filter. Useful for discovery before committing to a specific evaluation.
+
+<ParamField path="most_recent" type="bool" default="True">
+  Return only the single most recent EVALID per state when `True`. Set to `False` to return all matching EVALIDs.
+</ParamField>
+
+<ParamField path="state" type="int | None" default="None">
+  Restrict search to a specific state FIPS code. When `None`, searches all states in the database.
+</ParamField>
+
+<ParamField path="year" type="int | None" default="None">
+  Restrict to evaluations from a specific inventory year.
+</ParamField>
+
+<ParamField path="eval_type" type="str | None" default="None">
+  Restrict to a specific evaluation type such as `"VOL"`, `"GRM"`, or `"DWM"`. When `None`, all types are returned.
+</ParamField>
+
+<ResponseField name="returns" type="list[int]">
+  A list of matching EVALID integers.
+</ResponseField>
+
+```python
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    # All most-recent VOL evalids in the database
+    evalids = db.find_evalid(most_recent=True, eval_type="VOL")
+    print(evalids)  # [372301, 452301, 132301]
+
+    # All evaluations ever recorded for North Carolina
+    evalids = db.find_evalid(state=37, most_recent=False)
+
+    # Evaluations from a specific year
+    evalids = db.find_evalid(state=37, year=2023)
+```
+
+---
+
+## Spatial Methods
+
+Spatial methods require the optional spatial extras. Install them with:
+
+```bash
+pip install pyfia[spatial]
+```
+
+### `clip_by_polygon(polygon, predicate="intersects")`
+
+Restricts the analysis to FIA plots that fall within (or intersect) the boundary defined by a spatial file. Supports GeoJSON, Shapefile, GeoPackage, and any format readable by GeoPandas.
+
+<ParamField path="polygon" type="str | Path" required>
+  Path to a spatial file defining the clipping boundary. Common formats include `.geojson`, `.shp`, and `.gpkg`.
+</ParamField>
+
+<ParamField path="predicate" type="str" default='"intersects"'>
+  Spatial relationship used to select plots. `"intersects"` includes any plot whose location touches the polygon. `"within"` includes only plots whose location falls entirely inside the polygon.
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  `self`, enabling method chaining.
+</ResponseField>
+
+<Warning>
+  Raises `SpatialExtensionError` if `pyfia[spatial]` is not installed, `SpatialFileError` if the file cannot be read, and `NoSpatialFilterError` if no plots fall within the specified polygon.
+</Warning>
+
+```python
+from pyfia import FIA, tpa
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37).clip_by_polygon("boundary.geojson")
+
+    # Use 'within' predicate for strict containment
+    db.clip_by_polygon("counties.shp", predicate="within")
+
+    result = tpa(db)
+```
+
+---
+
+### `intersect_polygons(polygon, attributes)`
+
+Spatially joins attributes from a polygon layer to each plot. The joined attributes are then available as grouping variables in estimator calls via `grp_by`.
+
+<ParamField path="polygon" type="str | Path" required>
+  Path to the polygon file whose attributes you want to attach to the plot records.
+</ParamField>
+
+<ParamField path="attributes" type="list[str]" required>
+  Column names from the polygon file to attach to each plot. Only these columns are joined — others are ignored.
+</ParamField>
+
+<ResponseField name="returns" type="FIA">
+  `self`, enabling method chaining.
+</ResponseField>
+
+```python
+from pyfia import FIA, tpa
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.intersect_polygons("counties.shp", attributes=["NAME", "FIPS"])
+
+    # Group tree-per-acre estimates by county name
+    result = tpa(db, grp_by=["NAME"])
+    print(result)
+```
+
+<Tip>
+  `intersect_polygons` does not restrict which plots are included — it only attaches attributes. To also restrict the analysis area, call `clip_by_polygon` first.
+</Tip>
+
+---
+
+## Query Methods
+
+### `query(sql)`
+
+Executes a raw SQL SELECT statement against the underlying database and returns the result as a Polars DataFrame. This gives you full SQL expressiveness when pyFIA's higher-level estimators do not cover your use case.
+
+<ParamField path="sql" type="str" required>
+  A SQL string. Only `SELECT` statements and `WITH` (CTE) expressions are permitted. Any statement that attempts to mutate the database raises `DatabaseError`.
+</ParamField>
+
+<ResponseField name="returns" type="polars.DataFrame">
+  Query result as a Polars DataFrame.
+</ResponseField>
+
+<Warning>
+  Only read-only `SELECT` and `WITH` statements are allowed. Attempting `INSERT`, `UPDATE`, `DELETE`, or DDL statements raises `DatabaseError`.
+</Warning>
+
+```python
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    result = db.query("""
+        SELECT FORTYPCD, COUNT(*) AS n_plots
+        FROM COND
+        WHERE COND_STATUS_CD = 1
+        GROUP BY FORTYPCD
+        ORDER BY n_plots DESC
+    """)
+    print(result)
+
+    # Use a CTE for multi-step logic
+    result = db.query("""
+        WITH live_trees AS (
+            SELECT PLT_CN, SPCD, DIA, TPA_UNADJ
+            FROM TREE
+            WHERE STATUSCD = 1
+        )
+        SELECT SPCD, AVG(DIA) AS mean_dia, SUM(TPA_UNADJ) AS total_tpa
+        FROM live_trees
+        GROUP BY SPCD
+        ORDER BY total_tpa DESC
+    """)
+```
+
+---
+
+### `load_table(table_name, columns=None, where=None)`
+
+Loads a named FIA table as a Polars LazyFrame, with the current EVALID, state, and spatial filters pre-applied. Use this to access tables not surfaced by the convenience methods below.
+
+<ParamField path="table_name" type="str" required>
+  Name of the FIA table to load, e.g. `"TREE"`, `"COND"`, `"PLOT"`, `"SEEDLING"`.
+</ParamField>
+
+<ParamField path="columns" type="list[str] | None" default="None">
+  Subset of column names to load. When `None`, all columns are returned. Specifying only the columns you need can significantly reduce memory usage on large databases.
+</ParamField>
+
+<ParamField path="where" type="str | None" default="None">
+  Additional SQL `WHERE` clause fragment applied after the built-in filters, e.g. `"STATUSCD = 1 AND DIA >= 5.0"`.
+</ParamField>
+
+<ResponseField name="returns" type="polars.LazyFrame">
+  A lazy Polars frame. Call `.collect()` to materialize the result.
+</ResponseField>
+
+```python
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37).clip_most_recent()
+
+    # Load selected columns from TREE
+    tree_lazy = db.load_table(
+        "TREE",
+        columns=["PLT_CN", "SPCD", "DIA", "TPA_UNADJ"],
+        where="STATUSCD = 1 AND DIA >= 1.0"
+    )
+    tree_df = tree_lazy.collect()
+    print(tree_df.head())
+```
+
+---
+
+### `get_plots()`, `get_trees()`, `get_conditions()`
+
+Convenience methods that load the `PLOT`, `TREE`, and `COND` tables respectively as collected Polars DataFrames, with all active filters applied.
+
+<ParamField path="columns" type="list[str] | None" default="None">
+  Subset of column names to return. Available on `get_trees()` and `get_conditions()`. When `None`, all columns are included.
+</ParamField>
+
+<ResponseField name="returns" type="polars.DataFrame">
+  A collected Polars DataFrame for the requested table.
+</ResponseField>
+
+```python
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37).clip_most_recent()
+
+    plots = db.get_plots()
+    trees = db.get_trees(columns=["PLT_CN", "SPCD", "DIA", "TPA_UNADJ"])
+    conds = db.get_conditions()
+
+    print(f"Plots: {len(plots)}, Trees: {len(trees)}, Conditions: {len(conds)}")
+```
+
+---
+
+## Errors
+
+pyFIA raises typed exceptions so you can handle specific failure modes precisely.
+
+<Accordion title="NoEVALIDError">
+  Raised when an estimator or table-load operation is attempted before any EVALID filter has been set. Fix by calling `clip_by_state()`, `clip_most_recent()`, or `clip_by_evalid()` first.
+
+  ```python
+  from pyfia import FIA
+  from pyfia.exceptions import NoEVALIDError
+
+  try:
+      with FIA("data.duckdb") as db:
+          plots = db.get_plots()  # no clip applied → raises
+  except NoEVALIDError as e:
+      print(f"No EVALID set: {e}")
+  ```
+</Accordion>
+
+<Accordion title="InvalidEVALIDError">
+  Raised when an EVALID passed to `clip_by_evalid()` does not exist in the connected database.
+</Accordion>
+
+<Accordion title="DatabaseError">
+  Raised when the database connection cannot be established, or when a query fails at the engine level (e.g., malformed SQL, missing table).
+</Accordion>
+
+<Accordion title="TableNotFoundError">
+  Raised by `load_table()` and related methods when the requested table name is not present in the database. This can happen when a database was built with `common=True` and a less-common table is requested.
+</Accordion>
+
+<Accordion title="SpatialFileError">
+  Raised by `clip_by_polygon()` and `intersect_polygons()` when the supplied spatial file cannot be opened or parsed.
+</Accordion>
+
+<Accordion title="SpatialExtensionError">
+  Raised when a spatial method is called but `pyfia[spatial]` is not installed. Install it with `pip install pyfia[spatial]`.
+</Accordion>
+
+<Accordion title="NoSpatialFilterError">
+  Raised by `clip_by_polygon()` when the polygon boundary contains zero FIA plots. Check that the polygon CRS matches the plot coordinate system and that the area is not too small.
+</Accordion>

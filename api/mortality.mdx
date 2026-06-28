@@ -1,0 +1,203 @@
+---
+title: "mortality(): Estimate Annual Tree Mortality Rates"
+sidebarTitle: "mortality()"
+description: "mortality() estimates annual tree mortality using FIA's Growth-Removal-Mortality (GRM) tables. Requires a GRM evaluation — use clip_most_recent(eval_type='GRM')."
+---
+
+The `mortality()` function estimates the annual rate at which trees are dying across a forest population, expressed as volume, biomass, basal area, or tree count per acre per year. It draws on FIA's Growth-Removal-Mortality (GRM) remeasurement data, which pairs periodic plot revisits to calculate what was lost between measurement cycles. Because mortality is a change statistic rather than a status statistic, it has specific evaluation requirements that differ from functions like `tpa()` or `volume()` — you must use a GRM evaluation for results to be valid.
+
+## Function Signature
+
+```python
+mortality(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    size_class_type: str = "standard",
+    land_type: str = "timber",
+    tree_type: str = "gs",
+    measure: str = "volume",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    as_rate: bool = False,
+    totals: bool = True,
+    variance: bool = False,
+    most_recent: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An active `FIA` database connection. You **must** call `clip_by_state()` followed by `clip_most_recent(eval_type="GRM")` on this object before passing it to `mortality()`. Using any other evaluation type will raise an error or produce incomplete results.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to group results. Any column present in the `TREE`, `COND`, or `PLOT` tables may be referenced. When `None`, returns a single statewide aggregate mortality estimate.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, automatically adds `SPCD` (FIA species code) to the grouping. Use `join_species_names()` on the result to attach common and scientific names.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, groups results into size classes. The specific size-class scheme applied is controlled by the `size_class_type` parameter.
+</ParamField>
+
+<ParamField path="size_class_type" type="str" default="standard">
+  Controls the size-class scheme used when `by_size_class=True`. Three schemes are available:
+
+  - `"standard"` — Traditional 2-inch diameter classes (1.0–2.9 in, 3.0–4.9 in, 5.0–6.9 in, …). Used in most FIA publication tables.
+  - `"descriptive"` — Named ecological classes: Seedlings/Saplings (< 5.0 in), Small (5.0–8.9 in), Medium (9.0–14.9 in), Large (≥ 15.0 in).
+  - `"market"` — Product-oriented classes: Pulpwood (5.0–8.9 in), Chip-n-Saw (9.0–11.9 in), Sawtimber (≥ 12.0 in).
+</ParamField>
+
+<ParamField path="land_type" type="str" default="timber">
+  Restricts the denominator area to a specific land classification. Defaults to `"timber"` because GRM reporting is conventionally limited to productive, unreserved timberland:
+
+  - `"forest"` — All forest land
+  - `"timber"` — Timberland only (default)
+  - `"all"` — All sampled land
+</ParamField>
+
+<ParamField path="tree_type" type="str" default="gs">
+  Filters which trees contribute to the mortality estimate. Defaults to `"gs"` (growing stock) to align with standard FIA GRM reporting:
+
+  - `"live"` — All live trees at the time of initial measurement
+  - `"dead"` — Trees that were already dead at remeasurement (not annualized mortality)
+  - `"gs"` — Growing-stock trees (default)
+  - `"all"` — All sampled trees
+</ParamField>
+
+<ParamField path="measure" type="str" default="volume">
+  Selects the unit in which mortality is expressed. Choose the measure that best fits your analysis objective:
+
+  - `"volume"` — Annual cubic-foot volume mortality per acre (default)
+  - `"sawlog"` — Annual board-foot sawlog volume mortality per acre
+  - `"biomass"` — Annual dry-ton biomass mortality per acre
+  - `"tpa"` — Annual mortality in trees per acre
+  - `"count"` — Raw count of dead trees (not annualized per-acre)
+  - `"basal_area"` — Annual basal area mortality in square feet per acre
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter expression referencing columns in the FIA `TREE` table (as recorded at the initial measurement). Example: `"DIA >= 5.0"` restricts mortality estimates to trees that were at least 5 inches DBH when first measured.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the condition level (`COND` table). Restricts the forest conditions included in the denominator area.
+</ParamField>
+
+<ParamField path="as_rate" type="bool" default="false">
+  When `True`, returns mortality expressed as a dimensionless annual rate: the ratio of annual mortality to the live standing inventory (mortality ÷ live). This fraction represents the proportion of the standing stock dying each year and is useful for comparing mortality pressure across forest types, species, or time periods.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, includes `MORT_TOTAL` and `MORT_TOTAL_SE` columns with population-level total annual mortality across the forested area. Defaults to `True` because aggregate totals are commonly required alongside per-acre rates.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, exposes intermediate variance components for custom uncertainty propagation or methodological review.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically selects the most recent GRM evaluation for each state in the database. Equivalent to calling `db.clip_most_recent(eval_type="GRM")`, but applied internally.
+</ParamField>
+
+<Warning>
+  `mortality()` requires a **GRM (Growth-Removal-Mortality) evaluation**. Always call `db.clip_most_recent(eval_type="GRM")` — not the plain `clip_most_recent()` — before calling this function. Passing a VOL evaluation will either raise an explicit error or silently return incomplete results that cannot be interpreted as annualized mortality rates.
+</Warning>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Mortality">
+    ```python
+    from pyfia import FIA, mortality
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="GRM")  # GRM required!
+
+        # Annual volume mortality on timberland (default)
+        mort = mortality(db, measure="volume")
+
+        # Annual tree-count mortality
+        tree_mort = mortality(db, measure="tpa")
+    ```
+  </Tab>
+  <Tab title="Species Breakdown">
+    ```python
+    from pyfia import FIA, mortality, join_species_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="GRM")
+
+        # Annual mortality by species with population totals
+        by_spp = mortality(db, by_species=True, totals=True)
+        by_spp = join_species_names(by_spp, db)
+
+        print(by_spp.sort("MORT_TOTAL", descending=True).head(10))
+    ```
+  </Tab>
+  <Tab title="Size Classes & Rates">
+    ```python
+    from pyfia import FIA, mortality
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="GRM")
+
+        # Mortality by market-oriented size class
+        by_market = mortality(
+            db,
+            by_size_class=True,
+            size_class_type="market"
+        )
+
+        # Annual mortality rate (fraction of live inventory dying per year)
+        rate = mortality(db, as_rate=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Output Columns
+
+| Column | Description |
+|---|---|
+| `MORT_ACRE` | Annual mortality per acre in the units specified by `measure` |
+| `MORT_TOTAL` | Total annual mortality across the population (only when `totals=True`) |
+| `MORT_SE` | Standard error of `MORT_ACRE` |
+| `MORT_TOTAL_SE` | Standard error of the total estimate (only when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plot pairs (remeasurement intervals) contributing to the estimate |
+
+When `as_rate=True`, the output instead contains `MORT_RATE` (and `MORT_RATE_SE`), which expresses annual mortality as a proportion of the live standing inventory.
+
+Any columns in `grp_by`, plus `SPCD` if `by_species=True` and `SIZE_CLASS` if `by_size_class=True`, appear as leading identifier columns.
+
+## Size Class Schemes
+
+The three `size_class_type` options are designed for different reporting contexts:
+
+| Scheme | Classes | Best for |
+|---|---|---|
+| `"standard"` | 1–2.9 in, 3–4.9 in, 5–6.9 in, 7–8.9 in, … | Matching published FIA tables |
+| `"descriptive"` | Sapling, Small, Medium, Large | Ecological and silvicultural reporting |
+| `"market"` | Pulpwood, Chip-n-Saw, Sawtimber | Timber industry and harvest planning |
+
+<Accordion title="How GRM Annualization Works">
+  FIA's periodic plot remeasurement cycle is typically 5–7 years. To convert a mortality event that occurred sometime during that interval into an annual rate, FIA uses the midpoint-of-period assumption: trees that died are assigned to the midpoint of the remeasurement interval, and the raw mortality is divided by the number of years in the interval to produce an annualized estimate.
+
+  This means that mortality estimates are averages over the entire remeasurement period, not snapshots of a single year. Unusual mortality events (insect outbreaks, hurricanes, droughts) that cluster near one end of the interval are smoothed across the full period. When interpreting high-mortality results, check whether a known disturbance event falls within the remeasurement window for the plots driving the estimate.
+</Accordion>
+
+<Tip>
+  Pair `as_rate=True` with `by_species=True` to identify which species are experiencing elevated mortality pressure relative to their standing inventory. A species with a high `MORT_RATE` may be declining due to disease, invasive pests, or climate stress even if its absolute mortality volume appears modest.
+</Tip>
+
+<Note>
+  The default `land_type="timber"` and `tree_type="gs"` settings match the standard FIA Growth-Removal-Mortality reporting framework. If you change these defaults, ensure your interpretation accounts for the difference: all-forest or all-live estimates include reserved lands and non-merchantable trees that are excluded from standard GRM tables.
+</Note>

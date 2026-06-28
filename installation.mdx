@@ -1,0 +1,149 @@
+---
+title: "Install pyFIA: pip, uv, and Spatial Support"
+sidebarTitle: "Installation"
+description: "Install pyFIA using pip or uv, with optional spatial support for polygon-based filtering. Requires Python 3.11 or higher."
+---
+
+pyFIA runs entirely in-process — it embeds DuckDB as its query engine, so you do not need to install or run a separate database server. Installing pyFIA from PyPI is all you need to start downloading FIA data and running estimates. This page covers requirements, installation options, virtual environment setup, spatial extras, and a quick verification step.
+
+## Requirements
+
+Before you install, confirm your environment meets these prerequisites:
+
+- **Python 3.11 or higher.** pyFIA uses language features and type annotation syntax introduced in Python 3.11.
+- **pip 23+ or uv.** Either package manager works. uv is recommended for faster dependency resolution.
+- **~500 MB disk space per state** for downloaded FIA SQLite databases. Rhode Island is ~30 MB; large states like Washington or Oregon exceed 1 GB.
+- **No external database server.** DuckDB is bundled as a Python package dependency and runs in the same process as your script.
+
+## Install pyFIA
+
+<CodeGroup>
+  ```bash pip
+  pip install pyfia
+  ```
+
+  ```bash uv (recommended)
+  uv pip install pyfia
+  ```
+</CodeGroup>
+
+Both commands install the same package from PyPI. uv resolves the dependency graph significantly faster than pip, which is noticeable on first install when DuckDB and Polars are being pulled in alongside pyFIA.
+
+<Tip>
+  If you are starting a new project, consider `uv init my-project && cd my-project && uv add pyfia`. This creates a project with a lockfile so your dependency versions are pinned and reproducible across machines.
+</Tip>
+
+## With Spatial Support
+
+Spatial support enables two additional methods on the `FIA` class: `clip_by_polygon()` and `intersect_polygons()`. These methods let you restrict plot selection to a custom geographic boundary — a watershed, county, ownership unit, or any polygon you can express as a GeoJSON or Shapely geometry.
+
+```bash pip (spatial)
+pip install pyfia[spatial]
+```
+
+```bash uv (spatial)
+uv pip install pyfia[spatial]
+```
+
+The `[spatial]` extra installs DuckDB's spatial extension and its Python bindings. Without it, all core estimation functions (`area`, `tpa`, `volume`, `biomass`, `mortality`, `growth`, `removals`) work normally. Calling `clip_by_polygon()` or `intersect_polygons()` without the spatial extra raises a `SpatialExtensionError` with a message pointing you to this install step.
+
+<Note>
+  On some Linux distributions, the spatial extra requires `libgdal` to be present on the system. If the install fails with a shared-library error, install GDAL via your system package manager (`sudo apt install libgdal-dev` on Debian/Ubuntu) and then re-run the pip command.
+</Note>
+
+## Virtual Environments
+
+It is good practice to install pyFIA inside a virtual environment so its dependencies stay isolated from other projects. Here are the two most common approaches.
+
+<Tabs>
+  <Tab title="venv (built-in)">
+    The `venv` module ships with Python and requires no additional tools.
+
+    ```bash
+    # Create the environment
+    python -m venv .venv
+
+    # Activate it
+    source .venv/bin/activate      # Linux / macOS
+    .venv\Scripts\activate         # Windows (Command Prompt)
+    .venv\Scripts\Activate.ps1     # Windows (PowerShell)
+
+    # Install pyFIA into the active environment
+    pip install pyfia
+    ```
+
+    To deactivate the environment when you are done, run `deactivate`.
+  </Tab>
+  <Tab title="uv venv">
+    uv manages virtual environments natively and is the fastest option for creating and populating a new environment.
+
+    ```bash
+    # Create a virtual environment in .venv/
+    uv venv
+
+    # Activate it (same activate scripts as venv)
+    source .venv/bin/activate      # Linux / macOS
+    .venv\Scripts\activate         # Windows
+
+    # Install pyFIA
+    uv pip install pyfia
+    ```
+
+    With uv you can also skip manual activation and use `uv run` to execute scripts inside the environment directly: `uv run python my_analysis.py`.
+  </Tab>
+</Tabs>
+
+## Verify the Installation
+
+After installing, confirm pyFIA imported correctly and check the version:
+
+```python
+import pyfia
+print(pyfia.__version__)
+```
+
+You should see a version string such as `0.4.1`. If the import fails, double-check that you installed into the same environment your Python interpreter is using — a common issue when multiple Python versions are present on the same machine.
+
+You can also run a minimal smoke test from the command line:
+
+```bash
+python -c "import pyfia; print('pyFIA', pyfia.__version__, '— OK')"
+```
+
+## Configuration
+
+pyFIA reads two optional environment variables at startup:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PYFIA_DATABASE_PATH` | `~/.pyfia/` | Directory where downloaded FIA SQLite databases are saved |
+| `PYFIA_DATABASE_ENGINE` | `duckdb` | Query engine to use (`duckdb` is the only supported value in the current release) |
+
+You can set these in your shell profile, a `.env` file loaded by your project tooling, or directly before running a script:
+
+```bash
+export PYFIA_DATABASE_PATH=/data/fia
+python my_analysis.py
+```
+
+<Warning>
+  If `PYFIA_DATABASE_PATH` points to a directory on a network filesystem or a slow disk, query performance may degrade significantly. DuckDB performs best when the database file is on a local SSD.
+</Warning>
+
+For a full list of configuration options, including logging level and download timeout settings, see the [Configuration reference](/configuration/settings).
+
+## Upgrading pyFIA
+
+To upgrade to the latest release, pass the `--upgrade` flag:
+
+<CodeGroup>
+  ```bash pip
+  pip install --upgrade pyfia
+  ```
+
+  ```bash uv
+  uv pip install --upgrade pyfia
+  ```
+</CodeGroup>
+
+Check the [GitHub releases page](https://github.com/mihiarc/pyfia/releases) before upgrading in a production environment — new releases may introduce changes to estimation output columns or default argument values.

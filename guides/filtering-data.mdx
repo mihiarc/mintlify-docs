@@ -1,0 +1,158 @@
+---
+title: "Filter FIA Data by State, EVALID, and Domain"
+sidebarTitle: "Filtering Data"
+description: "Learn how to filter FIA data by state, evaluation ID, land type, tree type, and custom SQL domain expressions to define your analysis population."
+---
+
+Before you run any estimation function in pyFIA, you need to define the population you want to analyze. That means selecting the correct evaluation (the set of plots measured during a specific time window) and optionally narrowing that population further by land type, tree condition, or a custom SQL expression. pyFIA gives you a layered filtering system so you can express anything from a simple statewide query to a highly targeted domain analysis.
+
+## Selecting an Evaluation with EVALID
+
+An *evaluation* is an FIA concept that groups plots measured during overlapping five-year windows into a statistically valid sample. Every pyFIA analysis starts by attaching one or more evaluations to your database connection. Three methods cover all common scenarios.
+
+```python
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    # Option 1: Attach all evaluations for a state (FIPS code)
+    db.clip_by_state(37)  # North Carolina
+
+    # Option 2: Attach only the most recent evaluation
+    db.clip_most_recent(eval_type="VOL")
+
+    # Option 3: Attach a specific evaluation by its EVALID
+    db.clip_by_evalid(372301)
+```
+
+In practice you will almost always use `clip_by_state()` followed by `clip_most_recent()` to lock in the current reporting cycle before calling any estimator.
+
+### State FIPS Codes
+
+`clip_by_state()` accepts the integer FIPS code for a state, not a postal abbreviation.
+
+| FIPS | State |
+|---|---|
+| 6 | California |
+| 13 | Georgia |
+| 37 | North Carolina |
+| 48 | Texas |
+
+<Tip>
+  You can find every state's FIPS code in the `REF_STATE` table that ships with every pyFIA database.
+</Tip>
+
+### Evaluation Types
+
+The `eval_type` parameter on `clip_most_recent()` controls which kind of evaluation is selected.
+
+| eval_type | When to use |
+|---|---|
+| `"VOL"` | Volume evaluations — the default. Required for `tpa()`, `volume()`, `biomass()`, and `area()`. |
+| `"GRM"` | Growth/Removal/Mortality evaluations. Required for `mortality()`, `growth()`, and `removals()`. |
+| `"ALL"` | Attach all available evaluation types at once. |
+
+<Warning>
+  `mortality()`, `growth()`, and `removals()` require a GRM evaluation. Always call `db.clip_most_recent(eval_type="GRM")` before running those functions, or you will receive an `EvaluationTypeError` at runtime.
+</Warning>
+
+## Land Type and Tree Type
+
+Every estimation function accepts `land_type` and `tree_type` keyword arguments that apply standard FIA filter rules without requiring you to write SQL.
+
+### `land_type`
+
+| Value | What it selects | FIA condition |
+|---|---|---|
+| `"forest"` | All forestland (default) | `COND_STATUS_CD = 1` |
+| `"timber"` | Timberland — productive, unreserved forest | `COND_STATUS_CD = 1` and site productivity + reservation filters |
+| `"all"` | All sampled land regardless of condition | No condition filter |
+
+### `tree_type`
+
+| Value | What it selects | FIA condition |
+|---|---|---|
+| `"live"` | Live trees (default) | `STATUSCD = 1` |
+| `"dead"` | Standing dead trees | `STATUSCD = 2` |
+| `"gs"` | Growing stock — live, merchantable trees | `STATUSCD = 1` and `TREECLCD = 2` |
+| `"all"` | All trees regardless of status | No status filter |
+
+## Custom Domain Expressions
+
+When the built-in filters are not enough, you can pass raw SQL-like expressions via `tree_domain`, `area_domain`, and `plot_domain`. These expressions are evaluated against the underlying DuckDB tables, so any column in `TREE`, `COND`, or `PLOT` is fair game.
+
+### `tree_domain` — filter at the tree level
+
+```python
+import pyfia
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Only trees with DBH >= 12 inches
+    large_trees = pyfia.tpa(db, tree_domain="DIA >= 12.0")
+
+    # Specific oak species by species code
+    oak_volume = pyfia.volume(db, tree_domain="SPCD IN (802, 827, 833)")
+
+    # Growing stock trees on timberland, large diameter
+    large_gs = pyfia.volume(
+        db,
+        tree_domain="DIA >= 11.0 AND TREECLCD == 2",
+        land_type="timber",
+    )
+```
+
+### `area_domain` — filter at the condition level
+
+```python
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # National Forest land only (OWNGRPCD = 10)
+    nf_area = pyfia.area(db, area_domain="OWNGRPCD == 10")
+
+    # Oak forest types
+    oak_area = pyfia.area(db, area_domain="FORTYPCD IN (501, 502, 503)")
+```
+
+### `plot_domain` — filter at the plot level
+
+Use `plot_domain` when you want to restrict the analysis geographically using columns from the `PLOT` table, such as county or latitude.
+
+```python
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Single county
+    county_area = pyfia.area(db, plot_domain="COUNTYCD == 183")
+
+    # Latitude band
+    region_vol = pyfia.volume(db, plot_domain="LAT >= 35.0 AND LAT <= 36.0")
+```
+
+## Combining Filters
+
+You can stack all three domain parameters in a single function call. pyFIA applies them at the appropriate join level before computing expansion factors.
+
+```python
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+
+    # Large live oaks on private timberland in one county
+    result = pyfia.volume(
+        db,
+        tree_domain="DIA >= 11.0 AND SPCD IN (802, 827, 833)",
+        area_domain="OWNGRPCD == 40",
+        plot_domain="COUNTYCD == 183",
+        land_type="timber",
+        tree_type="live",
+    )
+```
+
+<Note>
+  Domain expressions are passed directly to DuckDB's SQL engine. Use standard SQL syntax: double equals (`==`) or single equals (`=`) for equality, `IN (...)` for sets, `AND`/`OR` for boolean logic, and standard comparison operators (`>=`, `<=`, `!=`).
+</Note>

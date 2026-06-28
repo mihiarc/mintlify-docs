@@ -1,0 +1,167 @@
+---
+title: "Validate pyFIA Estimates Against EVALIDator"
+sidebarTitle: "EVALIDator Validation"
+description: "Use pyFIA's EVALIDatorClient to fetch official USFS estimates and compare them with your pyFIA results to verify statistical accuracy."
+---
+
+pyFIA is designed to reproduce the official estimates produced by the USDA Forest Service's EVALIDator web tool to within sampling error. The `EVALIDatorClient` and companion validation helpers give you a programmatic way to query the USFS FIADB API, retrieve those official figures, and compare them side-by-side with your own pyFIA output — without leaving your Python environment.
+
+## Why Validate?
+
+If you are using pyFIA results in a report, publication, or decision-support tool, it is good practice to spot-check your estimates against EVALIDator. pyFIA's estimation logic follows the same design-based inference procedures as FIADB, so results should match to within a fraction of a percent. Running a validation confirms that your evaluation selection, land type filters, and domain expressions are correctly specified.
+
+<Note>
+  EVALIDator API calls require an active internet connection. The `EVALIDatorClient` includes automatic retry with exponential backoff, so transient network failures are handled gracefully without raising an error on the first timeout.
+</Note>
+
+## Quick Validation with `validate_pyfia_estimate()`
+
+The `validate_pyfia_estimate()` helper wraps the full fetch-and-compare workflow in a single call. Pass it your pyFIA result DataFrame, the state FIPS code, the inventory year, and the estimate type, and it returns a `ValidationResult` telling you whether the values agree within the tolerance you set.
+
+```python
+from pyfia import FIA, area, validate_pyfia_estimate
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    result = area(db, land_type="forest")
+
+    # Compare against the official EVALIDator estimate
+    validation = validate_pyfia_estimate(
+        pyfia_result=result,
+        state_code=37,
+        year=2023,
+        estimate_type="area",
+    )
+
+    print(f"Match: {validation.within_tolerance}")
+    print(f"Difference: {validation.pct_difference:.2f}%")
+```
+
+## Using `EVALIDatorClient` Directly
+
+For full control over what you fetch and how you use the response, instantiate `EVALIDatorClient` and call its query methods directly.
+
+```python
+from pyfia import EVALIDatorClient
+
+client = EVALIDatorClient()
+
+# Fetch the official forest area estimate for North Carolina, 2023 inventory
+result = client.get_forest_area(state_code=37, year=2023)
+
+print(f"Forest area: {result.estimate:,.0f} acres")
+print(f"Sampling error: {result.sampling_error_pct:.1f}%")
+```
+
+### `EVALIDatorEstimate` Fields
+
+The object returned by `EVALIDatorClient` methods carries everything you need to compare or report the official estimate.
+
+| Field | Type | Description |
+|---|---|---|
+| `estimate` | `float` | Point estimate (acres, cubic feet, trees, etc.) |
+| `sampling_error` | `float` | Absolute sampling error at the 67% confidence level |
+| `sampling_error_pct` | `float` | Sampling error expressed as a percentage of the estimate |
+| `variance` | `float` | Variance of the estimate |
+| `plot_count` | `int` | Number of plots contributing to the estimate |
+| `units` | `str` | Unit string (e.g., `"acres"`, `"cubic feet"`) |
+
+## Manual Comparison with `compare_estimates()`
+
+When you already have a pyFIA value in hand and want to test it against an `EVALIDatorEstimate` object you fetched separately, use `compare_estimates()`. This is useful in automated test pipelines where you want to assert tolerance thresholds.
+
+```python
+from pyfia import compare_estimates, EVALIDatorClient
+
+client = EVALIDatorClient()
+official = client.get_forest_area(state_code=37, year=2023)
+
+validation = compare_estimates(
+    pyfia_value=5_432_100.0,   # your pyFIA estimate in acres
+    pyfia_se=85_000.0,         # your pyFIA sampling error
+    evalidator_result=official,
+    tolerance_pct=5.0,         # flag if difference exceeds 5%
+)
+
+print(validation.within_tolerance)   # True if difference < 5%
+print(validation.pct_difference)     # exact percentage difference
+```
+
+## `ValidationResult` Fields
+
+Both `validate_pyfia_estimate()` and `compare_estimates()` return a `ValidationResult` dataclass with the following attributes.
+
+<Accordion title="View all ValidationResult fields">
+  | Field | Type | Description |
+  |---|---|---|
+  | `within_tolerance` | `bool` | `True` if the percentage difference is less than `tolerance_pct` |
+  | `pct_difference` | `float` | Absolute percentage difference between the two estimates |
+  | `pyfia_value` | `float` | The pyFIA point estimate used in the comparison |
+  | `evalidator_value` | `float` | The official EVALIDator point estimate |
+  | `pyfia_se` | `float` | pyFIA sampling error |
+  | `evalidator_se` | `float` | EVALIDator sampling error |
+</Accordion>
+
+## Testing Multiple Estimates in a Loop
+
+<Tabs>
+  <Tab title="Area validation">
+    ```python
+    from pyfia import FIA, area, compare_estimates, EVALIDatorClient
+
+    client = EVALIDatorClient()
+
+    state_codes = [37, 13, 45]  # NC, GA, SC
+    year = 2023
+
+    for fips in state_codes:
+        with FIA(f"state_{fips}.duckdb") as db:
+            db.clip_by_state(fips)
+            db.clip_most_recent()
+
+            result = area(db, land_type="forest")
+            official = client.get_forest_area(state_code=fips, year=year)
+
+            val = compare_estimates(
+                pyfia_value=float(result["AREA_ACRE"].iloc[0]),
+                pyfia_se=float(result["AREA_SE"].iloc[0]),
+                evalidator_result=official,
+                tolerance_pct=2.0,
+            )
+
+            status = "PASS" if val.within_tolerance else "FAIL"
+            print(f"State {fips}: {status} ({val.pct_difference:.2f}% difference)")
+    ```
+  </Tab>
+  <Tab title="Volume validation">
+    ```python
+    from pyfia import FIA, volume, compare_estimates, EVALIDatorClient
+
+    client = EVALIDatorClient()
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        result = volume(db, land_type="timber", tree_type="gs")
+        official = client.get_timber_volume(state_code=37, year=2023)
+
+        val = compare_estimates(
+            pyfia_value=float(result["VOL_ACRE"].iloc[0]),
+            pyfia_se=float(result["VOL_SE"].iloc[0]),
+            evalidator_result=official,
+            tolerance_pct=2.0,
+        )
+
+        print(f"Volume match: {val.within_tolerance}")
+        print(f"pyFIA:      {val.pyfia_value:,.1f} cu ft/acre")
+        print(f"EVALIDator: {val.evalidator_value:,.1f} cu ft/acre")
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  EVALIDator publishes estimates for completed inventory cycles. If you are working with data from a cycle that has not yet been formally published, `EVALIDatorClient` may return no result or an outdated estimate for that year. Always verify that the inventory year you request is available on the EVALIDator website before treating a null response as a validation failure.
+</Warning>

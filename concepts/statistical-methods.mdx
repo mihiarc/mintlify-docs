@@ -1,0 +1,163 @@
+---
+title: "pyFIA Statistical Methods and Design-Based Estimation"
+sidebarTitle: "Statistical Methods"
+description: "pyFIA implements FIA's post-stratified, design-based estimation methods from Bechtold & Patterson (2005), matching EVALIDator output exactly."
+---
+
+pyFIA implements the design-based, post-stratified estimation methods described in Bechtold & Patterson (2005) — the foundational technical reference for FIA's enhanced forest inventory program. Rather than fitting statistical models or making assumptions about the underlying forest population, design-based estimation draws its validity entirely from the randomness of the sampling design itself. This means your estimates are directly comparable to official FIA products, and the associated standard errors reflect genuine sampling uncertainty rather than model fit.
+
+## Design-Based Estimation
+
+In a design-based framework, the forest population is treated as fixed and unknown. Uncertainty arises only from which plots happened to be selected during sampling. This is conceptually distinct from model-based approaches (such as kriging or random forests) that assume a probability distribution over the population itself.
+
+FIA's systematic grid satisfies the requirements for design-based inference because every location in the US has a known, non-zero probability of being sampled. pyFIA exploits this property to produce unbiased estimates with valid confidence intervals from the plot data alone — no auxiliary models required.
+
+<Note>
+  Design-based validity depends on correct EVALID filtering. Each EVALID assembles exactly the set of plots intended for a particular estimation unit. Including extra plots from other evaluations violates the design assumptions and invalidates the variance calculations. See the [EVALID System](/concepts/evalid-system) guide for details.
+</Note>
+
+## Post-Stratified Estimation
+
+FIA improves estimation precision through post-stratification: plots are assigned to strata after sampling based on remote-sensing land cover classifications, and stratum-specific expansion factors weight each plot's contribution to the final estimate. Strata with more homogeneous forest conditions yield lower within-stratum variance, which tightens confidence intervals compared to a simple unstratified estimator.
+
+pyFIA reads stratum weights and plot assignments from three population tables:
+
+| Table | Role |
+|-------|------|
+| `POP_STRATUM` | Stratum-level area weights and variance components |
+| `POP_ESTN_UNIT` | Geographic estimation units that subdivide a state |
+| `POP_PLOT_STRATUM_ASSGN` | Links each plot to its stratum for a given EVALID |
+
+These tables are populated by FIA during the official estimation process and are stored in the same DuckDB file as the plot and tree data. You do not need to supply stratum weights yourself — pyFIA reads them automatically when you call any estimator.
+
+## Ratio-of-Means Estimators
+
+For per-acre quantities such as trees per acre, basal area per acre, or volume per acre, pyFIA uses ratio-of-means estimators. The numerator is the sum of the tree-level attribute across plots (weighted by each tree's per-acre expansion factor), and the denominator is the estimated forest land area. This ratio form is appropriate because forest attributes are defined on a per-unit-area basis and because it handles plots that straddle forest and non-forest conditions correctly.
+
+The variance of a ratio estimator is computed using the Taylor series approximation described in Bechtold & Patterson (2005), which accounts for the covariance between the numerator and denominator.
+
+## Output Columns
+
+Every pyFIA estimator returns a consistent set of output columns so you can interpret and compare results across functions.
+
+<CardGroup cols={2}>
+  <Card title="Point Estimates" icon="bullseye">
+    `estimate` (or `*_ACRE` suffix) contains the per-acre value. For example, `tpa()` returns a `TPA_UNADJ` column, while `volume()` returns `VOLCFNET_ACRE`.
+  </Card>
+  <Card title="Standard Error" icon="chart-simple">
+    `se` (or `*_SE` suffix) is the estimated standard error of the point estimate, derived from the post-stratified variance formula.
+  </Card>
+  <Card title="Coefficient of Variation" icon="percent">
+    `cv` expresses the standard error as a percentage of the point estimate. Values above 30% indicate that the estimate is based on relatively few plots and should be interpreted cautiously.
+  </Card>
+  <Card title="Confidence Interval" icon="arrows-left-right">
+    `ci_lower` and `ci_upper` are the lower and upper bounds of the approximate 95% confidence interval, computed as estimate ± 1.96 × se.
+  </Card>
+  <Card title="Population Totals" icon="sigma">
+    When you pass `totals=True`, every estimator appends `*_TOTAL` columns containing the population-level aggregate (e.g., total number of trees or total cubic-foot volume across the entire estimation area).
+  </Card>
+  <Card title="Plot Count" icon="hashtag">
+    `n_plots` reports the number of plots that contributed to the estimate. This is the single most useful diagnostic for assessing reliability — small `n_plots` values warrant caution.
+  </Card>
+</CardGroup>
+
+```python
+from pyfia import FIA
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+
+    result = db.tpa(totals=True, variance=True)
+    print(result.columns)
+    # TPA_UNADJ, TPA_SE, cv, ci_lower, ci_upper,
+    # TPA_TOTAL, n_plots, ... (+ full variance details)
+```
+
+## GRM Methodology for Change Estimation
+
+Growth, Removal, and Mortality (GRM) estimates require a specialized methodology that pyFIA implements using the `TREE_GRM_COMPONENT` and `TREE_GRM_MIDPT` tables. This is the correct FIA approach for any analysis involving change between inventory cycles.
+
+`TREE_GRM_COMPONENT` records the components of cubic-foot volume change for every remeasured tree: growth, ingrowth, harvest removal, and mortality. `TREE_GRM_MIDPT` stores the midpoint-period attributes of each tree, which are used as expansion factors so that estimates represent average annual conditions rather than either endpoint of the remeasurement interval.
+
+<Steps>
+  <Step title="Switch to GRM Evaluation">
+    GRM estimates require a GRM EVALID, not a VOL EVALID. Call `clip_most_recent(eval_type="GRM")` before running change estimators.
+
+    ```python
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent(eval_type="GRM")
+        annual_mortality = db.mortality()
+    ```
+  </Step>
+  <Step title="Interpret Annual Rates">
+    GRM estimators return annualized values — the per-year rate averaged across the remeasurement period, not a cumulative total. The `n_plots` column for GRM estimates reflects only remeasured plots, which is typically a subset of the full VOL plot network.
+  </Step>
+</Steps>
+
+<Warning>
+  Do not run GRM estimators (`mortality()`, `growth()`, `removals()`) against a VOL evaluation. The expansion factors in a VOL EVALID are not designed for change estimation and will produce incorrect results.
+</Warning>
+
+## Domain Estimation
+
+The `tree_domain` and `area_domain` parameters let you restrict estimates to a subset of trees or conditions. pyFIA implements these using an indicator-variable approach: the domain condition is applied to the numerator, but plots with zero qualifying trees still contribute to the denominator.
+
+This is statistically necessary. Excluding no-tree plots from the denominator would bias the per-acre estimate upward and also invalidate the variance calculation by artificially inflating the apparent correlation between numerator and denominator. The domain indicator approach matches the method used in EVALIDator.
+
+```python
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+
+    # Trees per acre, restricted to loblolly pine on private land
+    result = db.tpa(
+        tree_domain="SPCD = 131",
+        area_domain="OWNGRPCD = 40"
+    )
+```
+
+<Tip>
+  You can combine `tree_domain` and `area_domain` independently. `tree_domain` filters which trees contribute to the numerator; `area_domain` restricts which land area contributes to the denominator. Using both together gives you attributes per acre of a specific land class.
+</Tip>
+
+## Full Variance Output
+
+Set `variance=True` on any estimator to receive the complete variance decomposition in the output. This includes the stratum-level variance components, the between-stratum covariance terms for ratio estimators, and the effective sample size. Full variance output is primarily useful when you are aggregating pyFIA results into a larger analysis pipeline or verifying intermediate calculations.
+
+```python
+result = db.basal_area(variance=True)
+# Additional columns: VAR_EST, VAR_MEAN, n_strata, ...
+```
+
+## Validation Against EVALIDator
+
+pyFIA is validated to match the USDA's official EVALIDator web tool within 5% for all core estimators, with typical agreement under 1%. Use the `EVALIDatorClient` helper to pull EVALIDator estimates programmatically and compare them side by side:
+
+```python
+from pyfia import FIA
+from pyfia.validation import EVALIDatorClient
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="VOL")
+    pyfia_result = db.tpa()
+
+client = EVALIDatorClient()
+official = client.tpa(evalid=372301)
+
+# Compare — differences should be < 1%
+print(pyfia_result["TPA_UNADJ"].values[0])
+print(official["estimate"].values[0])
+```
+
+<Note>
+  Minor discrepancies between pyFIA and EVALIDator (under 1%) can arise from rounding in intermediate calculations or from differences in how boundary conditions are handled. Differences above 5% usually indicate an EVALID mismatch — double-check that both queries are using the same evaluation.
+</Note>
+
+## Reference
+
+Bechtold, W.A. and Patterson, P.L., eds. (2005). *The Enhanced Forest Inventory and Analysis Program — National Sampling Design and Estimation Procedures*. General Technical Report SRS-80. Asheville, NC: USDA Forest Service, Southern Research Station. 85 pp.
+
+This report is the authoritative specification for all estimation methods implemented in pyFIA. When publishing results generated with pyFIA, cite this report alongside the specific FIA database and EVALID used.

@@ -1,0 +1,179 @@
+---
+title: "area(): Estimate Forest Land Area from FIA Data"
+sidebarTitle: "area()"
+description: "area() computes design-based forest area estimates by land type, ownership, forest type, or custom domain. Returns per-acre and total acreage with standard errors."
+---
+
+The `area()` function is your primary tool for computing forest land area estimates from USDA Forest Inventory and Analysis (FIA) data. It uses design-based estimation to produce statistically valid acreage figures for any land classification you choose — whether you need total statewide forest area, timberland by ownership group, or a custom domain defined by stand-level attributes. All estimates include associated standard errors so you can communicate uncertainty alongside your results.
+
+## Function Signature
+
+```python
+area(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    land_type: str = "forest",
+    area_domain: str | None = None,
+    plot_domain: str | None = None,
+    most_recent: bool = False,
+    eval_type: str | None = None,
+    variance: bool = False,
+    totals: bool = True,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An active `FIA` database connection created with `FIA("path/to/db.duckdb")`. You should call `clip_by_state()` and `clip_most_recent()` on the object before passing it here to ensure the correct evaluation is selected.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names to group results by. Pass a single string such as `"FORTYPCD"` or a list like `["OWNGRPCD", "FORTYPCD"]`. When `None`, the function returns a single aggregate estimate across the entire domain.
+</ParamField>
+
+<ParamField path="land_type" type="str" default="forest">
+  Restricts the estimate to a specific land classification. Accepted values are:
+
+  - `"forest"` — All forest land, regardless of productivity or reserved status
+  - `"timber"` — Timberland only (productive, unreserved forest)
+  - `"all"` — All sampled land, including non-forest
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the condition level to restrict which forest conditions are counted toward the area estimate. Any column present in the FIA `COND` table may be referenced. Examples: `"OWNGRPCD == 10"` for National Forest land, `"STDAGE > 150"` for old-growth conditions.
+</ParamField>
+
+<ParamField path="plot_domain" type="str | None" default="None">
+  A SQL-style filter expression applied at the plot level before any area estimation occurs. Use this to restrict the set of plots included in the analysis. References columns from the FIA `PLOT` table.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically filters to the single most recent evaluation for each state in the database. This is a convenience shortcut equivalent to calling `db.clip_most_recent()` before the function call.
+</ParamField>
+
+<ParamField path="eval_type" type="str | None" default="None">
+  Specifies the evaluation type to use. Area estimation defaults to `"EXPALL"` evaluations. You rarely need to set this explicitly when `clip_by_state()` has already been called.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, the returned DataFrame includes additional columns exposing intermediate variance components — useful for custom post-stratification, combining estimates across regions, or peer review of the estimation procedure.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, includes `AREA_TOTAL` and `AREA_TOTAL_SE` columns representing the population-level total acreage and its standard error. Set to `False` if you only need the per-acre proportion estimate.
+</ParamField>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Usage">
+    ```python
+    from pyfia import FIA, area, join_forest_type_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Total forest area for North Carolina
+        total = area(db, land_type="forest")
+
+        # Timberland only
+        timber = area(db, land_type="timber")
+    ```
+  </Tab>
+  <Tab title="Grouped Estimates">
+    ```python
+    from pyfia import FIA, area, join_forest_type_names
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # Forest area broken down by forest type code
+        by_type = area(db, grp_by="FORTYPCD", totals=True)
+        by_type = join_forest_type_names(by_type, db)
+
+        # Forest area broken down by ownership group
+        by_owner = area(db, grp_by="OWNGRPCD")
+    ```
+  </Tab>
+  <Tab title="Custom Domains">
+    ```python
+    from pyfia import FIA, area
+
+    with FIA("nc.duckdb") as db:
+        db.clip_by_state(37)
+        db.clip_most_recent()
+
+        # National Forest land only (OWNGRPCD == 10)
+        nf = area(db, area_domain="OWNGRPCD == 10")
+
+        # Old-growth stands (stand age > 150 years)
+        old = area(db, area_domain="STDAGE > 150")
+
+        # With full variance detail
+        detailed = area(db, variance=True)
+    ```
+  </Tab>
+</Tabs>
+
+## Output Columns
+
+The returned `polars.DataFrame` includes the following columns:
+
+| Column | Description |
+|---|---|
+| `AREA_ACRE` | Forest area in acres per acre (the design-based proportion multiplied by the expansion factor) |
+| `AREA_TOTAL` | Total area in acres across the population (only present when `totals=True`) |
+| `AREA_SE` | Standard error of `AREA_ACRE` |
+| `AREA_TOTAL_SE` | Standard error of the total estimate (only present when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage (`AREA_SE / AREA_ACRE × 100`) |
+| `n_plots` | Number of plots contributing to the estimate |
+
+Any columns listed in `grp_by` are also included as leading identifier columns.
+
+<Note>
+  Area estimation relies on **EXPALL** evaluation types, which include all sampled conditions regardless of whether they appear in a volume evaluation. When you call `db.clip_by_state()`, pyFIA automatically selects the appropriate EVALID so you don't need to manage evaluation types manually in most workflows.
+</Note>
+
+## Grouping by Forest Type
+
+When you group by `FORTYPCD`, you get numeric forest type codes. Use `join_forest_type_names()` to attach human-readable labels to those codes:
+
+```python
+from pyfia import FIA, area, join_forest_type_names
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    by_type = area(db, grp_by="FORTYPCD", totals=True)
+    by_type = join_forest_type_names(by_type, db)
+
+print(by_type.select(["FORTYPE_NAME", "AREA_TOTAL", "AREA_TOTAL_SE"]))
+```
+
+<Accordion title="Combining Multiple Group-By Columns">
+  You can pass a list of column names to `grp_by` to produce a cross-tabulated result. For example, grouping by both ownership and forest type gives you area estimates for every ownership × forest-type combination present in your data:
+
+  ```python
+  from pyfia import FIA, area
+
+  with FIA("nc.duckdb") as db:
+      db.clip_by_state(37)
+      db.clip_most_recent()
+
+      cross = area(db, grp_by=["OWNGRPCD", "FORTYPCD"], totals=True)
+  ```
+
+  Keep in mind that cross-tabulated estimates have smaller effective sample sizes per cell, which increases coefficient of variation. Cells with fewer than about 30 plots should be interpreted cautiously.
+</Accordion>
+
+<Tip>
+  To compare area estimates across multiple states, loop over FIPS codes and concatenate results. Because each `clip_by_state()` call resets the active evaluation, create a fresh `FIA` connection (or re-clip) for each state inside the loop.
+</Tip>
+
+<Warning>
+  Passing an `area_domain` expression that references a column not present in the FIA `COND` table will raise a column-not-found error at query time. Check the FIA Database Description document for the complete list of condition-level attributes before constructing domain strings.
+</Warning>

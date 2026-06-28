@@ -1,0 +1,147 @@
+---
+title: "Spatial Filtering and Polygon Analysis with pyFIA"
+sidebarTitle: "Spatial Analysis"
+description: "Filter FIA plots to a custom polygon boundary or join polygon attributes for regional grouping. Supports Shapefile, GeoJSON, GeoPackage, and GeoParquet."
+---
+
+pyFIA's spatial tools let you move beyond state or county boundaries and analyze FIA data within any custom polygon you define. You can clip the analysis population to a watershed, a national forest boundary, or any other region — and you can attach polygon attributes to plots so you can group estimates by those regions. All spatial operations run inside DuckDB using its native spatial extension, so there is no round-trip to an external GIS engine.
+
+## Prerequisites
+
+Spatial support is an optional dependency. Install it with the `spatial` extra before attempting any polygon operation.
+
+```bash
+pip install pyfia[spatial]
+```
+
+This installs the DuckDB spatial extension alongside the required Python geometry libraries. You only need to do this once per environment.
+
+<Warning>
+  If you call `clip_by_polygon()` or `intersect_polygons()` without the spatial extra installed, pyFIA raises a `SpatialExtensionError` with instructions to re-install with `pip install pyfia[spatial]`.
+</Warning>
+
+## Two Spatial Methods
+
+| Method | What it does |
+|---|---|
+| `clip_by_polygon(polygon, predicate)` | Restricts the analysis population to plots that fall within (or intersect) your polygon. Estimates reflect only those plots. |
+| `intersect_polygons(polygon, attributes)` | Joins polygon attribute columns to each plot. Plots outside the polygon are retained but receive null values for the joined columns. Use this with `grp_by` to produce per-region estimates. |
+
+## Supported File Formats
+
+pyFIA reads spatial files through DuckDB's spatial extension, which supports the four most common vector formats.
+
+<CardGroup cols={2}>
+  <Card title="Shapefile" icon="file">
+    `.shp` (must be accompanied by `.dbf` and `.prj` files in the same directory)
+  </Card>
+  <Card title="GeoJSON" icon="brackets-curly">
+    `.geojson` or `.json` — single or multi-feature
+  </Card>
+  <Card title="GeoPackage" icon="database">
+    `.gpkg` — single or multi-layer packages; first layer is used by default
+  </Card>
+  <Card title="GeoParquet" icon="table">
+    `.parquet` files containing a geometry column
+  </Card>
+</CardGroup>
+
+Spatial files should use **EPSG:4326 (WGS84)** — longitude/latitude in decimal degrees. If your file uses a projected coordinate system, pyFIA reprojects it automatically before the spatial join.
+
+<Note>
+  FIA plot coordinates are intentionally fuzzed by up to approximately one mile to protect landowner privacy. Treat spatial results as statistically valid for regions spanning several plots or more, not as precise plot-level locations.
+</Note>
+
+## Clipping to a Region
+
+Use `clip_by_polygon()` when you want estimates that reflect only the land inside your boundary. The method filters the internal plot list before any expansion factor is applied, so the resulting estimates correctly represent the clipped population.
+
+```python
+from pyfia import FIA, tpa, area
+
+with FIA("southeast.duckdb") as db:
+    db.clip_by_state(37)            # North Carolina
+    db.clip_most_recent(eval_type="VOL")
+
+    # Keep only plots within your polygon
+    db.clip_by_polygon("my_region.geojson")
+
+    # All subsequent estimates reflect only the clipped area
+    result = tpa(db)
+    forest = area(db, land_type="forest")
+```
+
+### Spatial Predicates
+
+The `predicate` parameter controls how plots are matched against the polygon boundary.
+
+| predicate | Behavior |
+|---|---|
+| `"intersects"` (default) | Includes plots whose fuzzed coordinates intersect the polygon, including those on the boundary. |
+| `"within"` | Includes only plots whose fuzzed coordinates fall strictly inside the polygon interior. |
+
+```python
+# Strict containment — excludes plots that touch the edge
+db.clip_by_polygon("my_region.geojson", predicate="within")
+```
+
+## Grouping Estimates by Polygon Attributes
+
+Use `intersect_polygons()` when you want to produce separate estimates for each feature in a polygon layer — for example, one row per county or one row per watershed. The method joins the polygon's attribute columns to the plot table so you can reference them in `grp_by`.
+
+```python
+from pyfia import FIA, tpa
+
+with FIA("southeast.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Join NAME and FIPS columns from the county shapefile to plots
+    db.intersect_polygons("counties.shp", attributes=["NAME", "FIPS"])
+
+    # Group estimates by the joined county name
+    result = tpa(db, grp_by=["NAME"])
+    print(result)
+    # NAME    | TPA_ACRE | TPA_SE | ...
+    # Wake    | 142.3    | 8.2    | ...
+    # Durham  | 165.7    | 11.4   | ...
+```
+
+## Combining Clip and Intersect
+
+You can call both methods on the same connection object. pyFIA applies the clip first to restrict the population, then performs the attribute join on the surviving plots. This pattern is useful when your region of interest is itself a sub-area of a state and you want per-subregion breakdowns within it.
+
+```python
+from pyfia import FIA, area
+
+with FIA("southeast.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # First clip to the Piedmont physiographic region
+    db.clip_by_polygon("piedmont.geojson")
+
+    # Then join county names so we can group within the region
+    db.intersect_polygons("counties.shp", attributes=["NAME"])
+
+    # Forest area by county, restricted to the Piedmont
+    result = area(db, grp_by=["NAME"])
+```
+
+<Tip>
+  MotherDuck cloud connections do not support spatial operations because the DuckDB spatial extension requires local file access. If you are connecting to a MotherDuck database, download the state data to a local DuckDB file first and run polygon filtering there.
+</Tip>
+
+## Error Reference
+
+<CardGroup cols={3}>
+  <Card title="SpatialFileError" icon="file-circle-xmark">
+    The path you provided does not exist, the file format is not supported, or the file is corrupt. Verify the path and format.
+  </Card>
+  <Card title="SpatialExtensionError" icon="puzzle-piece">
+    The DuckDB spatial extension is not installed. Re-install with `pip install pyfia[spatial]` to resolve this.
+  </Card>
+  <Card title="NoSpatialFilterError" icon="location-xmark">
+    No FIA plots were found within your polygon. This usually means a coordinate reference system mismatch — confirm your file uses EPSG:4326 or a CRS pyFIA can reproject from.
+  </Card>
+</CardGroup>

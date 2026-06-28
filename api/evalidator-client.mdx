@@ -1,0 +1,283 @@
+---
+title: "EVALIDatorClient: Query Official USFS FIA Estimates"
+sidebarTitle: "EVALIDatorClient"
+description: "EVALIDatorClient queries the official USFS FIADB API to retrieve EVALIDator estimates for comparison with pyFIA results. Includes automatic retry with backoff."
+---
+
+The `EVALIDatorClient` class provides a Python interface to the USFS Forest Inventory and Analysis EVALIDator web service, which publishes the official published estimates that accompany each FIA evaluation. You can use it to retrieve reference values for forest area, volume, biomass, and related statistics by state and year, then compare those values directly against your own pyFIA results using the included `validate_pyfia_estimate()` and `compare_estimates()` helpers. This workflow is especially useful for quality-assurance checks and for confirming that a newly downloaded database is correctly clipped and evaluated.
+
+<Note>
+  The EVALIDator API requires an active internet connection. The client
+  automatically retries failed requests using exponential backoff: each
+  successive attempt waits `retry_delay × 2^attempt` seconds plus a small
+  random jitter to avoid synchronized retries across concurrent calls.
+</Note>
+
+## Constructor
+
+```python
+EVALIDatorClient(
+    timeout: int = 30,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
+)
+```
+
+### Parameters
+
+<ParamField path="timeout" type="int" default="30">
+  Maximum number of seconds to wait for a response from the EVALIDator API
+  before raising a `TimeoutError`. Increase this on slow connections or when
+  querying large states with many evaluations.
+</ParamField>
+
+<ParamField path="max_retries" type="int" default="3">
+  Number of additional attempts to make after an initial failure. A value of
+  `3` means up to four total attempts. Set to `0` to disable retries.
+</ParamField>
+
+<ParamField path="retry_delay" type="float" default="2.0">
+  Base delay in seconds used in the exponential backoff formula. Attempt `n`
+  waits approximately `retry_delay × 2^n` seconds before retrying.
+</ParamField>
+
+---
+
+## Key Methods
+
+### `get_forest_area(state_code, year)`
+
+Retrieves the official EVALIDator forest area estimate for a given state and inventory year.
+
+```python
+get_forest_area(
+    state_code: int,
+    year: int,
+) -> EVALIDatorEstimate
+```
+
+#### Example
+
+```python
+from pyfia import EVALIDatorClient
+
+client = EVALIDatorClient()
+result = client.get_forest_area(state_code=37, year=2023)
+
+print(f"Forest area:      {result.estimate:,.0f} acres")
+print(f"Sampling error:   {result.sampling_error_pct:.1f}%")
+print(f"Plot count:       {result.plot_count}")
+```
+
+---
+
+## `EVALIDatorEstimate` Dataclass
+
+`get_forest_area()` and other retrieval methods return an `EVALIDatorEstimate` instance with the following fields:
+
+<ParamField path="estimate" type="float">
+  The point estimate (e.g., total forested acres).
+</ParamField>
+
+<ParamField path="sampling_error" type="float">
+  Absolute sampling error at the 67% confidence level (one standard error).
+</ParamField>
+
+<ParamField path="sampling_error_pct" type="float">
+  Sampling error expressed as a percentage of the estimate. EVALIDator
+  reports this value directly; it corresponds to the coefficient of variation
+  times 100.
+</ParamField>
+
+<ParamField path="variance" type="float">
+  Estimated variance of the point estimate.
+</ParamField>
+
+<ParamField path="plot_count" type="int">
+  Number of FIA plots that contributed to the estimate.
+</ParamField>
+
+<ParamField path="units" type="str">
+  Units of the estimate (e.g., `"acres"`, `"cubic feet"`, `"short tons"`).
+</ParamField>
+
+<ParamField path="estimate_type" type="str">
+  A string label describing what the estimate measures
+  (e.g., `"forest_area"`, `"live_volume"`).
+</ParamField>
+
+<ParamField path="state_code" type="int">
+  The FIPS state code used to retrieve the estimate.
+</ParamField>
+
+<ParamField path="year" type="int">
+  The inventory year associated with the estimate.
+</ParamField>
+
+---
+
+## Validation Helpers
+
+### `validate_pyfia_estimate()`
+
+A high-level convenience function that retrieves the corresponding EVALIDator estimate and compares it against your pyFIA result in a single call.
+
+```python
+from pyfia import FIA, area, validate_pyfia_estimate
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+    result = area(db)
+
+validation = validate_pyfia_estimate(
+    pyfia_result=result,
+    state_code=37,
+    year=2023,
+    estimate_type="area",
+)
+
+print(f"Within tolerance:  {validation.within_tolerance}")
+print(f"Difference:        {validation.pct_difference:.2f}%")
+```
+
+<ParamField path="pyfia_result" type="polars.DataFrame" required>
+  The output DataFrame from a pyFIA estimation function such as `area()` or
+  `volume()`. The helper reads the estimate value from the appropriate column
+  automatically.
+</ParamField>
+
+<ParamField path="state_code" type="int" required>
+  FIPS state code (e.g., `37` for North Carolina).
+</ParamField>
+
+<ParamField path="year" type="int" required>
+  Inventory year to retrieve from EVALIDator.
+</ParamField>
+
+<ParamField path="estimate_type" type="str" required>
+  The type of estimate to validate. Accepted values include `"area"`,
+  `"volume"`, `"biomass"`, and `"tpa"`.
+</ParamField>
+
+---
+
+### `compare_estimates()`
+
+A lower-level function that accepts pre-computed values from both pyFIA and EVALIDator and returns a `ValidationResult`. Use this when you already have an `EVALIDatorEstimate` object and want to compare it against a scalar value from your analysis.
+
+```python
+from pyfia import EVALIDatorClient, compare_estimates
+
+client = EVALIDatorClient()
+official = client.get_forest_area(37, 2023)
+
+validation = compare_estimates(
+    pyfia_value=5_432_100.0,
+    pyfia_se=85_000.0,
+    evalidator_result=official,
+    tolerance_pct=5.0,
+)
+
+print(f"pyFIA estimate:       {validation.pyfia_value:,.0f}")
+print(f"EVALIDator estimate:  {validation.evalidator_value:,.0f}")
+print(f"Difference:           {validation.pct_difference:.2f}%")
+print(f"Within 5% tolerance:  {validation.within_tolerance}")
+```
+
+<ParamField path="pyfia_value" type="float" required>
+  The point estimate produced by your pyFIA call (e.g., total forested acres).
+</ParamField>
+
+<ParamField path="pyfia_se" type="float" required>
+  The standard error of your pyFIA estimate, taken from the `*_SE` column of
+  your result DataFrame.
+</ParamField>
+
+<ParamField path="evalidator_result" type="EVALIDatorEstimate" required>
+  An `EVALIDatorEstimate` instance retrieved from `EVALIDatorClient`.
+</ParamField>
+
+<ParamField path="tolerance_pct" type="float" default="5.0">
+  The percentage threshold within which the two estimates must agree for
+  `within_tolerance` to be `True`. A value of `5.0` means the estimates
+  must differ by less than 5%.
+</ParamField>
+
+---
+
+## `ValidationResult` Fields
+
+`validate_pyfia_estimate()` and `compare_estimates()` both return a `ValidationResult` dataclass:
+
+| Field | Type | Description |
+|---|---|---|
+| `within_tolerance` | `bool` | `True` if the absolute percentage difference is less than `tolerance_pct` |
+| `pct_difference` | `float` | Signed percentage difference: `(pyfia − evalidator) / evalidator × 100` |
+| `pyfia_value` | `float` | The pyFIA point estimate |
+| `evalidator_value` | `float` | The EVALIDator point estimate |
+| `pyfia_se` | `float` | Standard error of the pyFIA estimate |
+| `evalidator_se` | `float` | Standard error of the EVALIDator estimate |
+
+---
+
+## Common Patterns
+
+<Accordion title="Bulk validation across multiple states">
+  Loop over a list of state codes and collect `ValidationResult` objects to
+  build a summary table of estimate agreement.
+
+  ```python
+  import polars as pl
+  from pyfia import FIA, area, validate_pyfia_estimate
+
+  states = [37, 45, 13, 12]  # NC, SC, GA, FL
+  rows = []
+
+  for fips in states:
+      with FIA("southeast.duckdb") as db:
+          db.clip_by_state(fips)
+          db.clip_most_recent()
+          result = area(db)
+
+      v = validate_pyfia_estimate(
+          pyfia_result=result,
+          state_code=fips,
+          year=2023,
+          estimate_type="area",
+      )
+      rows.append({
+          "state_code": fips,
+          "pct_diff": v.pct_difference,
+          "within_5pct": v.within_tolerance,
+      })
+
+  summary = pl.DataFrame(rows)
+  print(summary)
+  ```
+</Accordion>
+
+<Accordion title="Adjusting timeout for slow connections">
+  Increase `timeout` and reduce aggressiveness of retries when running in
+  a network-constrained environment.
+
+  ```python
+  client = EVALIDatorClient(timeout=60, max_retries=5, retry_delay=3.0)
+  result = client.get_forest_area(state_code=6, year=2022)  # California
+  ```
+</Accordion>
+
+<Accordion title="Widening the tolerance threshold">
+  Some states with sparse plot networks have higher sampling errors.
+  Widen `tolerance_pct` when validating estimates for states where EVALIDator
+  itself reports a sampling error above 5%.
+
+  ```python
+  validation = compare_estimates(
+      pyfia_value=my_estimate,
+      pyfia_se=my_se,
+      evalidator_result=official,
+      tolerance_pct=10.0,  # wider band for high-error states
+  )
+  ```
+</Accordion>

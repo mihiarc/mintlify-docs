@@ -1,0 +1,162 @@
+---
+title: "Group FIA Estimates by Species, Forest Type, and More"
+sidebarTitle: "Grouping Results"
+description: "Use grp_by to stratify forest inventory estimates by species, forest type, ownership, county, or any FIA column. Add human-readable names with reference table joins."
+---
+
+Forest inventory analyses rarely stop at a single statewide number. You often want to know how timber volume breaks down by species, how forest area is distributed across ownership classes, or how tree density varies by county. pyFIA's `grp_by` parameter lets you stratify any estimate by one or more FIA columns in a single function call, and a set of convenience join functions translate numeric codes into human-readable names.
+
+## The `grp_by` Parameter
+
+Every pyFIA estimator function accepts `grp_by` as either a string (for a single column) or a list of strings (for multiple columns). The returned DataFrame contains one row per unique combination of the grouping values, along with the point estimate and its sampling error.
+
+```python
+import pyfia
+from pyfia import FIA
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Stratify trees per acre by species code
+    by_species = pyfia.tpa(db, grp_by="SPCD")
+
+    # Stratify forest area by ownership group
+    by_owner = pyfia.area(db, grp_by="OWNGRPCD")
+
+    # Cross-tabulate volume by forest type and ownership
+    by_type_owner = pyfia.volume(db, grp_by=["FORTYPCD", "OWNGRPCD"])
+
+    # Summarize area at the county level
+    by_county = pyfia.area(db, grp_by="COUNTYCD")
+```
+
+## Convenience Parameters
+
+Two shorthand parameters cover the most common grouping scenarios so you do not need to remember exact column names.
+
+```python
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # by_species=True is exactly equivalent to grp_by="SPCD"
+    by_species = pyfia.tpa(db, by_species=True)
+
+    # by_size_class=True groups results into 2-inch DBH classes
+    by_size = pyfia.tpa(db, by_size_class=True)
+
+    # Combine both to get a species × size-class breakdown
+    species_size = pyfia.volume(db, by_species=True, by_size_class=True)
+```
+
+## Common Grouping Columns
+
+The table below lists the FIA columns you will reach for most often. All of these exist in the `TREE` or `COND` tables and are available for any estimator.
+
+| Column | Description |
+|---|---|
+| `SPCD` | Individual species code |
+| `SPGRPCD` | Broad species group (e.g., softwoods vs. hardwoods) |
+| `FORTYPCD` | Forest type code |
+| `STDSZCD` | Stand size class: `1` = Large, `2` = Medium, `3` = Small, `4` = Seedling/sapling |
+| `OWNGRPCD` | Ownership group: `10` = National Forest, `20` = Other Federal, `30` = State/Local, `40` = Private |
+| `COUNTYCD` | County FIPS code within the state |
+| `STATECD` | State FIPS code (useful in multi-state databases) |
+| `STDAGE` | Estimated stand age |
+| `SITECLCD` | Site productivity class |
+
+<Tip>
+  When grouping by `COUNTYCD` across multiple states, also include `STATECD` in your `grp_by` list. County codes are only unique within a state, so `grp_by=["STATECD", "COUNTYCD"]` prevents collisions in multi-state databases.
+</Tip>
+
+## Adding Human-Readable Names
+
+Numeric codes are precise but hard to read. pyFIA ships three join helpers that append name columns to your result DataFrame by looking up values in the reference tables bundled with every database.
+
+```python
+from pyfia import (
+    FIA,
+    join_species_names,
+    join_forest_type_names,
+    join_state_names,
+)
+import pyfia
+
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # --- Species names ---
+    result = pyfia.tpa(db, by_species=True)
+
+    # Appends a COMMON_NAME column
+    result = join_species_names(result, db)
+
+    # Also append SCIENTIFIC_NAME
+    result = join_species_names(result, db, include_scientific=True)
+
+    # --- Forest type names ---
+    result = pyfia.area(db, grp_by="FORTYPCD")
+
+    # Appends a FOREST_TYPE_NAME column
+    result = join_forest_type_names(result, db)
+
+    # --- State names (useful in multi-state databases) ---
+    result = pyfia.area(db, grp_by="STATECD")
+
+    # Appends STATE_NAME and STATE_ABBR columns
+    result = join_state_names(result, db)
+```
+
+<Note>
+  The join helpers do not modify the database — they perform an in-memory merge on the DataFrame returned by the estimator. The original numeric code column is preserved alongside the new name column.
+</Note>
+
+## Getting Population Totals with `totals=True`
+
+By default, pyFIA returns per-acre (or per-tree) rate estimates. Set `totals=True` to also receive population-level totals scaled to the full land area of the evaluation.
+
+```python
+with FIA("data.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    result = pyfia.volume(
+        db,
+        grp_by="FORTYPCD",
+        totals=True,
+    )
+```
+
+With `totals=True`, the result DataFrame contains both the per-acre rate columns (e.g., `VOL_ACRE`, `VOL_SE`) and the population total columns (e.g., `TOTAL_VOL`, `TOTAL_VOL_SE`). This is useful when you need to report both density and aggregate resource figures in the same table.
+
+## Putting It All Together
+
+<Accordion title="Full worked example: volume by species with names and totals">
+  ```python
+  import pyfia
+  from pyfia import FIA, join_species_names
+
+  with FIA("data.duckdb") as db:
+      db.clip_by_state(37)       # North Carolina
+      db.clip_most_recent()
+
+      result = pyfia.volume(
+          db,
+          by_species=True,
+          land_type="timber",
+          tree_type="gs",
+          totals=True,
+      )
+
+      result = join_species_names(result, db, include_scientific=True)
+
+      # Sort by total volume descending
+      result = result.sort_values("TOTAL_VOL", ascending=False)
+
+      print(result[["COMMON_NAME", "SCIENTIFIC_NAME", "VOL_ACRE", "TOTAL_VOL", "TOTAL_VOL_SE"]].head(10))
+  ```
+
+  This produces a ranked table of the top ten species by total merchantable volume on North Carolina timberland, including both the per-acre rate and the statewide total with its sampling error.
+</Accordion>

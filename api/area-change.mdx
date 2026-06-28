@@ -1,0 +1,181 @@
+---
+title: "area_change(): Estimate Forest Area Change Over Time"
+sidebarTitle: "area_change()"
+description: "area_change() estimates net or gross change in forest land area using remeasured FIA plots. Returns annualized change rates in acres per year."
+---
+
+The `area_change()` function quantifies how much forest land area has increased or decreased over a remeasurement period by comparing the land classification of FIA plots at two points in time. You can request net change (gains minus losses), gross gains (non-forest land converting to forest), or gross losses (forest land converting away from forest). Results are annualized by default, making it straightforward to compare rates across states or time periods with different remeasurement intervals.
+
+<Warning>
+  `area_change()` requires a CHANGE evaluation. Before calling this function,
+  run `db.clip_most_recent(eval_type="CHNG")` on your `FIA` instance.
+  A standard `CURR` evaluation does not contain the remeasured plot pairs
+  needed to compute change, and will produce incorrect results.
+</Warning>
+
+## Function Signature
+
+```python
+area_change(
+    db: FIA,
+    land_type: str = "forest",
+    change_type: str = "net",
+    annual: bool = True,
+    grp_by: str | list[str] | None = None,
+    area_domain: str | None = None,
+    variance: bool = False,
+    totals: bool = False,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An open `FIA` database connection clipped to a CHANGE evaluation via
+  `db.clip_most_recent(eval_type="CHNG")`.
+</ParamField>
+
+<ParamField path="land_type" type="str" default='"forest"'>
+  The land classification whose area change you want to measure. `"forest"`
+  covers all forest land; `"timber"` limits the analysis to productive,
+  unreserved timberland.
+</ParamField>
+
+<ParamField path="change_type" type="str" default='"net"'>
+  Controls which component of area change is returned. Accepted values:
+
+  - `"net"` — Gross gains minus gross losses (can be negative)
+  - `"gross_gain"` — Only land that transitioned **into** the target
+    land type (e.g., non-forest → forest)
+  - `"gross_loss"` — Only land that transitioned **out of** the target
+    land type (e.g., forest → non-forest)
+</ParamField>
+
+<ParamField path="annual" type="bool" default="true">
+  When `True`, returns annualized change in acres per year by dividing the
+  period total by the remeasurement interval. When `False`, returns the
+  cumulative change across the entire remeasurement period.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to stratify results. For example,
+  `"OWNGRPCD"` produces estimates by ownership class, and `"COUNTYCD"`
+  produces county-level estimates.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied to condition-level attributes.
+  For example, `"OWNGRPCD == 40"` restricts the analysis to private land.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, appends variance columns to the output alongside standard
+  error columns. Useful when you need to propagate uncertainty into
+  downstream calculations.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="false">
+  When `True`, includes a population-level area total column in the output.
+  For area change, the per-group `AREA_CHANGE` column already represents the
+  stratum total; this flag mirrors the behavior of other pyFIA functions.
+</ParamField>
+
+## Usage Examples
+
+```python
+from pyfia import FIA, area_change
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="CHNG")
+
+    # Net annual forest area change (acres/year)
+    net = area_change(db, land_type="forest")
+
+    # Gross gains — land converting to forest
+    gains = area_change(db, change_type="gross_gain")
+
+    # Gross losses — forest converting to other land uses
+    losses = area_change(db, change_type="gross_loss")
+
+    # Net annual change by ownership class
+    by_owner = area_change(db, grp_by="OWNGRPCD")
+
+    # Total (not annualized) change over the remeasurement period
+    total = area_change(db, annual=False, totals=True)
+```
+
+<Tip>
+  Request all three `change_type` values in separate calls and verify that
+  `gross_gain - gross_loss ≈ net`. Small discrepancies can arise from plots
+  that changed land classification multiple times within a single panel cycle.
+</Tip>
+
+## Output Columns
+
+| Column | Description |
+|---|---|
+| `AREA_CHANGE` | Area change in acres/year (if `annual=True`) or total acres |
+| `AREA_CHANGE_SE` | Standard error of `AREA_CHANGE` |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+Group columns specified via `grp_by` are prepended to the output DataFrame.
+
+<Note>
+  A negative `AREA_CHANGE` value when `change_type="net"` indicates a net
+  reduction in the land type. This is expected in heavily developed states
+  where forest-to-development conversions outpace reforestation.
+</Note>
+
+## Common Patterns
+
+<Accordion title="Decomposing net change into gross components">
+  Request all three change types in a single session and combine the results
+  for a complete land-transition summary.
+
+  ```python
+  with FIA("nc.duckdb") as db:
+      db.clip_by_state(37)
+      db.clip_most_recent(eval_type="CHNG")
+
+      net    = area_change(db, change_type="net")
+      gains  = area_change(db, change_type="gross_gain")
+      losses = area_change(db, change_type="gross_loss")
+  ```
+</Accordion>
+
+<Accordion title="Annualized vs. period totals">
+  Use `annual=False` when you need the total acreage that changed hands over
+  the entire evaluation period rather than a per-year rate.
+
+  ```python
+  period_total = area_change(db, annual=False)
+  annual_rate  = area_change(db, annual=True)
+  ```
+</Accordion>
+
+<Accordion title="Change by ownership and county">
+  Combine multiple group columns to produce a fine-grained spatial breakdown.
+
+  ```python
+  detailed = area_change(
+      db,
+      grp_by=["COUNTYCD", "OWNGRPCD"],
+      change_type="gross_loss",
+  )
+  ```
+</Accordion>
+
+<Accordion title="Restricting to private timberland">
+  Pair `land_type="timber"` with an ownership domain to isolate change on
+  private productive forest land — the most commercially sensitive category.
+
+  ```python
+  private_timber = area_change(
+      db,
+      land_type="timber",
+      area_domain="OWNGRPCD == 40",
+  )
+  ```
+</Accordion>

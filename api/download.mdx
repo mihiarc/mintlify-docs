@@ -1,0 +1,251 @@
+---
+title: "download(): Fetch FIA Data from the USDA DataMart"
+sidebarTitle: "download()"
+description: "download() fetches FIA data for one or more US states from the USDA DataMart, converts it to DuckDB format, and returns the path to the database file."
+---
+
+The `download()` function is your starting point when you do not yet have a local copy of FIA data. It contacts the USDA Forest Service DataMart, retrieves the requested state CSV files, and assembles them into a single DuckDB database file on disk. The returned `Path` object points directly to that file, so you can pass it straight to `FIA()` or store it for later. By default, `download()` caches its results so re-running the same call is instant.
+
+---
+
+## Function Signature
+
+```python
+from pyfia import download
+
+download(
+    states: str | list[str],
+    dir: str | Path | None = None,
+    common: bool = True,
+    tables: list[str] | None = None,
+    force: bool = False,
+    show_progress: bool = True,
+    use_cache: bool = True,
+) -> Path
+```
+
+---
+
+## Parameters
+
+<ParamField path="states" type="str | list[str]" required>
+  Two-letter US state abbreviation(s) whose FIA data you want to download. Pass a single string such as `"GA"` for one state, or a list such as `["GA", "FL", "SC"]` to merge multiple states into one database. State codes follow standard USPS abbreviations (e.g. `"NC"`, `"CA"`, `"WA"`).
+</ParamField>
+
+<ParamField path="dir" type="str | Path | None" default="None">
+  Directory where the resulting DuckDB file (and any intermediate downloads) will be saved. When `None`, pyFIA uses `~/.pyfia/data/`. The directory is created automatically if it does not exist.
+</ParamField>
+
+<ParamField path="common" type="bool" default="True">
+  Controls which FIA tables are downloaded. When `True`, only the tables required by pyFIA's built-in estimators (`PLOT`, `COND`, `TREE`, `POP_EVAL`, `POP_STRATUM`, and a handful of others) are fetched — keeping download size small. Set to `False` to retrieve every table available for the state on the DataMart, which can be significantly larger.
+</ParamField>
+
+<ParamField path="tables" type="list[str] | None" default="None">
+  Explicit list of FIA table names to download, e.g. `["PLOT", "TREE", "COND", "SEEDLING"]`. When provided, this list takes precedence over `common`, letting you fetch exactly the tables you need without downloading the full dataset.
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  When `True`, pyFIA re-downloads all requested data from the DataMart even if a cached copy already exists locally. Use this to refresh stale data after a new FIA inventory cycle is published.
+</ParamField>
+
+<ParamField path="show_progress" type="bool" default="True">
+  Display a progress bar in the terminal while tables are being downloaded and converted. Set to `False` for cleaner output in scripts or CI environments.
+</ParamField>
+
+<ParamField path="use_cache" type="bool" default="True">
+  When `True`, pyFIA skips re-downloading any table that is already present in the local cache directory. Set to `False` to always pull fresh data from the DataMart (equivalent to `force=True` but without deleting old cached files first).
+</ParamField>
+
+---
+
+## Return Value
+
+<ResponseField name="returns" type="Path">
+  An absolute `pathlib.Path` to the assembled DuckDB file. You can pass this directly to `FIA()` or store it as a variable for reuse across sessions.
+</ResponseField>
+
+---
+
+## Exceptions
+
+<ResponseField name="raises" type="StateNotFoundError">
+  Raised when one or more of the provided state abbreviations are not recognized or are not available on the USDA DataMart. Check that you are using the two-letter USPS code (e.g. `"NC"`, not `"North Carolina"`).
+</ResponseField>
+
+<ResponseField name="raises" type="TableNotFoundError">
+  Raised when a table name supplied via the `tables` parameter does not exist for the requested state on the DataMart. Some tables are only published for certain states or evaluation types.
+</ResponseField>
+
+<ResponseField name="raises" type="NetworkError">
+  Raised when pyFIA cannot reach the USDA DataMart servers. This may indicate a network connectivity issue, a firewall restriction, or temporary DataMart downtime.
+</ResponseField>
+
+<ResponseField name="raises" type="DownloadError">
+  Raised for any other download failure, such as a malformed response, a corrupted file, or a failure during DuckDB conversion. The exception message includes details about which state or table triggered the error.
+</ResponseField>
+
+---
+
+## Examples
+
+<Tabs>
+  <Tab title="Single State">
+    The simplest usage: download data for one state and get back the path to the database.
+
+    ```python
+    from pyfia import download
+
+    db_path = download("RI")
+    print(db_path)  # /home/user/.pyfia/data/RI.duckdb
+    ```
+  </Tab>
+
+  <Tab title="Multiple States">
+    Pass a list of state codes to merge several states into a single database file. pyFIA concatenates the tables from each state and deduplicates header rows automatically.
+
+    ```python
+    from pyfia import download
+
+    db_path = download(["GA", "FL", "SC"])
+    print(db_path)  # /home/user/.pyfia/data/GA_FL_SC.duckdb
+    ```
+  </Tab>
+
+  <Tab title="Custom Directory">
+    Save the database to a project-specific location rather than the default cache directory.
+
+    ```python
+    from pyfia import download
+
+    db_path = download("NC", dir="./data")
+    print(db_path)  # ./data/NC.duckdb
+    ```
+  </Tab>
+
+  <Tab title="Specific Tables">
+    Download only the tables your analysis needs to minimize transfer time and disk usage.
+
+    ```python
+    from pyfia import download
+
+    db_path = download("GA", tables=["PLOT", "TREE", "COND"])
+    ```
+  </Tab>
+
+  <Tab title="Force Re-download">
+    Force a fresh fetch from the DataMart to pick up newly published inventory data.
+
+    ```python
+    from pyfia import download
+
+    db_path = download("GA", force=True)
+    ```
+  </Tab>
+
+  <Tab title="Use Immediately">
+    Chain `download()` directly into `FIA()` for a compact one-liner workflow. The database is downloaded (or served from cache) and the connection is ready for estimator calls.
+
+    ```python
+    from pyfia import download, FIA, area
+
+    with FIA(download("RI")) as db:
+        db.clip_most_recent()
+        print(area(db))
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Full Workflow Example
+
+The following example shows a complete end-to-end workflow: downloading a multi-state database, connecting to it, applying filters, and running an estimator.
+
+```python
+from pyfia import download, FIA, tpa, area
+
+# Download data for three southeastern states
+db_path = download(
+    ["GA", "FL", "SC"],
+    dir="./southeast_data",
+    show_progress=True,
+)
+
+# Open and analyze
+with FIA(db_path) as db:
+    # Apply the most recent VOL evaluation for all states
+    db.clip_most_recent(eval_type="VOL")
+
+    # Trees per acre by species
+    tpa_result = tpa(db, grp_by=["SPCD"])
+    print(tpa_result.head(10))
+
+    # Forested area by state
+    area_result = area(db, grp_by=["STATECD"])
+    print(area_result)
+```
+
+<Note>
+  The first time you call `download()` for a state, it contacts the USDA DataMart and may take several minutes depending on state size and your network speed. Subsequent calls return instantly from the local cache unless `force=True` or `use_cache=False` is set.
+</Note>
+
+---
+
+## Cache Utilities
+
+pyFIA maintains a download cache at `~/.pyfia/data/` to avoid redundant network requests. Two helper functions let you inspect and manage that cache.
+
+### `cache_info()`
+
+Returns a dictionary with statistics about the current cache contents, including the total size on disk, the number of cached databases, and per-state metadata.
+
+```python
+from pyfia import cache_info
+
+info = cache_info()
+print(info)
+# {
+#   "cache_dir": "/home/user/.pyfia/data",
+#   "total_size_mb": 842.3,
+#   "databases": [
+#     {"state": "GA", "path": "...", "size_mb": 420.1, "created": "2024-03-15"},
+#     {"state": "RI", "path": "...", "size_mb": 18.7,  "created": "2024-06-01"},
+#   ]
+# }
+```
+
+### `clear_cache(older_than_days=None, state=None, delete_files=False)`
+
+Removes cache entries — and optionally the underlying files — matching the given criteria. Without arguments, it clears the metadata registry but leaves files on disk.
+
+<ParamField path="older_than_days" type="int | None" default="None">
+  Remove cache entries created more than this many days ago. When `None`, this criterion is not applied.
+</ParamField>
+
+<ParamField path="state" type="str | None" default="None">
+  Restrict removal to a single state's cache entry (e.g. `"GA"`). When `None`, all entries matching other criteria are removed.
+</ParamField>
+
+<ParamField path="delete_files" type="bool" default="False">
+  When `True`, the DuckDB files themselves are deleted from disk in addition to the cache metadata being cleared. Use with caution — deleted files cannot be recovered without re-downloading.
+</ParamField>
+
+```python
+from pyfia import cache_info, clear_cache
+
+# Inspect the cache before making changes
+print(cache_info())
+
+# Remove metadata entries older than 30 days (keeps files)
+clear_cache(older_than_days=30)
+
+# Remove Georgia's cache entry and delete its file from disk
+clear_cache(state="GA", delete_files=True)
+
+# Clear everything and delete all downloaded files
+clear_cache(delete_files=True)
+```
+
+<Warning>
+  Passing `delete_files=True` permanently removes the DuckDB files from your filesystem. You will need to re-run `download()` to restore them, which requires network access and may take several minutes for large states.
+</Warning>

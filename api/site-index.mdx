@@ -1,0 +1,168 @@
+---
+title: "site_index(): Estimate Site Productivity Index"
+sidebarTitle: "site_index()"
+description: "site_index() calculates area-weighted mean site index from FIA data — a measure of site productivity based on expected dominant tree height at base age."
+---
+
+The `site_index()` function computes area-weighted mean site index values from FIA plot data, giving you a quantitative measure of how productive a forest site is for timber growth. Site index is defined as the expected height in feet of dominant and codominant trees at a reference age — typically 25 or 50 years — and is one of the most widely used indicators of site quality in forest management planning. Because site index values are only comparable within the same species and base age combination, `site_index()` always groups results by both `SISP` (site index species) and `SIBASE` (base age).
+
+## Function Signature
+
+```python
+site_index(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    land_type: str = "forest",
+    area_domain: str | None = None,
+    plot_domain: str | None = None,
+    most_recent: bool = False,
+    eval_type: str | None = None,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An open `FIA` database connection. Call `db.clip_most_recent()` before
+  invoking `site_index()` to ensure you are working with a consistent
+  evaluation set.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to further stratify results. Results
+  are always grouped by `SISP` and `SIBASE` in addition to any columns you
+  provide here. Common choices include `"OWNGRPCD"`, `"COUNTYCD"`, and
+  `"FORTYPCD"`.
+</ParamField>
+
+<ParamField path="land_type" type="str" default='"forest"'>
+  Restricts estimation to a land classification. Use `"timber"` to limit
+  results to productive, unreserved timberland.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter expression applied to condition-level attributes before
+  estimation. For example, `"OWNGRPCD == 10"` restricts results to National
+  Forest land.
+</ParamField>
+
+<ParamField path="plot_domain" type="str | None" default="None">
+  A SQL-style filter expression applied to plot-level attributes. Use this to
+  restrict by geographic or administrative identifiers stored at the plot
+  level rather than the condition level.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, automatically clips to the most-recent standard evaluation
+  internally. Explicit use of `db.clip_most_recent()` before calling
+  `site_index()` is preferred for transparency.
+</ParamField>
+
+<ParamField path="eval_type" type="str | None" default="None">
+  Overrides the evaluation type filter. In most workflows you can leave this
+  as `None` and control the evaluation with `db.clip_most_recent()`.
+</ParamField>
+
+## Understanding Site Index
+
+Site index is recorded at the condition level in FIA data. A single plot can contain multiple conditions, each with a different site index species (`SISP`) and base age (`SIBASE`). The area-weighted mean computed by `site_index()` accounts for the proportion of each plot's area that each condition occupies.
+
+<Note>
+  Site index values measured at different base ages are **not directly
+  comparable**, even for the same species. Always compare values within
+  a single `SIBASE` group. A site index of 80 at base age 25 is a very
+  different productivity level than a site index of 80 at base age 50.
+</Note>
+
+## Usage Examples
+
+```python
+from pyfia import FIA, site_index
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent()
+
+    # Site index by species and base age (default grouping)
+    si = site_index(db)
+
+    # Further grouped by ownership class
+    si_owner = site_index(db, grp_by="OWNGRPCD")
+
+    # Timberland only
+    si_timber = site_index(db, land_type="timber")
+
+    # Grouped by forest type
+    si_type = site_index(db, grp_by="FORTYPCD")
+```
+
+<Tip>
+  Pair `grp_by="FORTYPCD"` with a reference join to replace numeric forest
+  type codes with descriptive names. See the
+  [Reference Tables](/api/reference-tables) page for the
+  `join_forest_type_names()` helper.
+</Tip>
+
+## Output Columns
+
+The returned `polars.DataFrame` always includes `SISP` and `SIBASE` as grouping columns. Additional group columns you specify via `grp_by` are prepended.
+
+| Column | Description |
+|---|---|
+| `SISP` | FIA site index species code |
+| `SIBASE` | Base age used for the site index measurement (years) |
+| `SITE_INDEX` | Area-weighted mean site index (feet) |
+| `SITE_INDEX_SE` | Standard error of the area-weighted mean |
+| `AREA_ACRES` | Total forested area (acres) associated with the estimate |
+| `n_plots` | Number of plots contributing to the estimate |
+
+## Common Patterns
+
+<Accordion title="Identifying high-productivity sites by ownership">
+  Sort the output by `SITE_INDEX` descending within each species–base-age
+  group to rank ownership classes by productivity.
+
+  ```python
+  si = site_index(db, grp_by="OWNGRPCD")
+  top = (
+      si
+      .sort(["SISP", "SIBASE", "SITE_INDEX"], descending=[False, False, True])
+  )
+  ```
+</Accordion>
+
+<Accordion title="Filtering to a single site index species">
+  Use `area_domain` or `plot_domain` to filter conditions where the site
+  index was measured for a particular species. SISP codes match FIA tree
+  species codes (SPCD).
+
+  ```python
+  # Site index measured for loblolly pine (SPCD 131)
+  loblolly_si = site_index(db, area_domain="SISP == 131")
+  ```
+</Accordion>
+
+<Accordion title="Comparing productivity across forest types">
+  Grouping by both `FORTYPCD` and ownership gives a two-way summary useful
+  for forest management planning.
+
+  ```python
+  from pyfia import join_forest_type_names
+
+  si = site_index(db, grp_by=["FORTYPCD", "OWNGRPCD"])
+  si = join_forest_type_names(si, db)
+  ```
+</Accordion>
+
+<Accordion title="Restricting to private timberland">
+  Combine `land_type="timber"` with an ownership domain to focus on
+  the land base most relevant to commercial forestry analysis.
+
+  ```python
+  private_timber = site_index(
+      db,
+      land_type="timber",
+      area_domain="OWNGRPCD == 40",
+  )
+  ```
+</Accordion>

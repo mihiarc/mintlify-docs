@@ -1,0 +1,82 @@
+---
+title: "pyFIA: Python Library for Forest Inventory Analysis"
+sidebarTitle: "Introduction"
+description: "pyFIA provides high-performance, programmatic access to USDA FIA data with design-based estimates that match EVALIDator exactly at 10–100x the speed."
+---
+
+pyFIA is a Python library that gives you fast, reproducible, code-driven access to the USDA Forest Inventory and Analysis (FIA) database — the most comprehensive record of US forest resources. Built on [DuckDB](https://duckdb.org/) and [Polars](https://pola.rs/), pyFIA runs entirely in-process with no external database server, so you can download FIA data for any state, filter it to a specific evaluation or geography, and compute statistically valid estimates for area, tree density, volume, biomass, mortality, growth, and removals — all from a Python script or Jupyter notebook.
+
+## Why pyFIA?
+
+The official USDA FIA web tool, [EVALIDator](https://apps.fs.usda.gov/Evalidator/evalidator.jsp), produces the same design-based estimates that pyFIA does, but it runs one query at a time through a browser interface and cannot be scripted or automated. pyFIA was built to remove that ceiling: you get the same statistically valid results, with full reproducibility, at a fraction of the time it would take to click through the web UI.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install pyFIA, download Rhode Island data, and run your first estimate in under 5 minutes.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed install instructions for pip, uv, and optional spatial support.
+  </Card>
+  <Card title="Core Concepts" icon="book-open" href="/concepts/fia-data">
+    Learn how FIA evaluations, EVALIDs, and design-based estimation work together.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/area">
+    Full reference for every estimation function, filter method, and utility helper.
+  </Card>
+</CardGroup>
+
+## Core Capabilities
+
+pyFIA covers the full FIA analytical workflow from raw data download through publication-ready estimates.
+
+**Data access and download**
+Download FIA SQLite databases for any US state directly from the USDA FIA DataMart. pyFIA handles the HTTP transfer, unpacks the archive, and returns a path you can open immediately.
+
+**Filtering and scoping**
+Narrow your analysis to a specific evaluation period using `clip_most_recent()`, target a named EVALID with `clip_by_evalid()`, or restrict plots to a custom geographic boundary with `clip_by_polygon()` — no SQL required.
+
+**Estimation functions**
+Run any of the core FIA estimates with a single function call:
+
+| Function | What it estimates |
+|---|---|
+| `area()` | Forest and timberland area in acres |
+| `tpa()` | Trees per acre (live, standing dead, or both) |
+| `volume()` | Net or gross merchantable cubic-foot volume |
+| `biomass()` | Above- and below-ground dry biomass |
+| `mortality()` | Annual mortality rate (requires GRM evaluation) |
+| `growth()` | Annual net growth (requires GRM evaluation) |
+| `removals()` | Annual harvest removals (requires GRM evaluation) |
+
+Every function returns a [Polars](https://pola.rs/) DataFrame with point estimates, standard errors, coefficients of variation, and confidence intervals.
+
+## pyFIA vs EVALIDator
+
+Both pyFIA and EVALIDator implement USDA FIA's design-based estimation methodology, so their results agree for equivalent queries. The difference lies in how you interact with them.
+
+| Capability | pyFIA | EVALIDator |
+|---|---|---|
+| **Speed** | 10–100× faster | Browser-based, one query at a time |
+| **Interface** | Python API | Web UI |
+| **Reproducibility** | Full — code is the record | Manual — no script to re-run |
+| **Custom analysis** | Unlimited grouping, filtering, joins | Fixed set of predefined queries |
+| **Statistical validity** | Design-based, matches EVALIDator | Design-based (reference implementation) |
+| **Offline use** | Yes — local DuckDB file | No — requires internet access |
+| **Batch queries** | Yes — loop over states or species | No |
+
+## Statistical Validity
+
+pyFIA implements the same ratio-of-means estimator described in [Bechtold & Patterson (2005)](https://www.srs.fs.usda.gov/pubs/gtr/gtr_srs080/) that EVALIDator uses. Every estimate includes a standard error and a 95 % confidence interval computed from the post-stratified sample design. When you filter to the same EVALID and land type that EVALIDator uses, pyFIA's point estimates and sampling errors match EVALIDator's output.
+
+<Note>
+  pyFIA provides programmatic access to FIA data but is not part of the official FIA Program. For official statistics, consult the [USDA Forest Service FIA Program](https://www.fia.fs.usda.gov/).
+</Note>
+
+## Built on Modern Python Infrastructure
+
+pyFIA leans on two high-performance libraries so you don't have to manage a database server or write SQL:
+
+- **[DuckDB](https://duckdb.org/)** — an in-process analytical SQL engine that reads the FIA SQLite file directly and executes multi-threaded queries against millions of plot records in seconds.
+- **[Polars](https://pola.rs/)** — a Rust-based DataFrame library that handles the post-stratification arithmetic, grouping, and output formatting at speeds that make pandas look slow for large state inventories.
+
+Optional spatial capabilities (polygon clipping, spatial joins) are provided by DuckDB's spatial extension and are installed separately with `pip install pyfia[spatial]`.

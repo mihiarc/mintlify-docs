@@ -1,0 +1,205 @@
+---
+title: "removals(): Estimate Annual Timber Harvest Removals"
+sidebarTitle: "removals()"
+description: "removals() estimates average annual harvest removals of growing-stock volume from FIA GRM data. Use for timber supply analysis and harvest planning."
+---
+
+The `removals()` function estimates the average annual volume, biomass, or tree count removed from a forest through timber harvest using FIA's GRM component tables. Removals in FIA terminology refer specifically to trees that were live at the previous measurement and were harvested (cut and removed) before the most recent measurement — they do not include mortality or other attrition. This makes `removals()` the right choice for timber supply modeling, harvest intensity analysis, and comparing harvest rates against growth.
+
+<Warning>
+  `removals()` requires a GRM evaluation. Before calling this function, run
+  `db.clip_most_recent(eval_type="GRM")` on your `FIA` instance. Calling it
+  against a standard `CURR` evaluation will return incorrect or empty results.
+</Warning>
+
+## Function Signature
+
+```python
+removals(
+    db: FIA,
+    grp_by: str | list[str] | None = None,
+    by_species: bool = False,
+    by_size_class: bool = False,
+    size_class_type: str = "standard",
+    land_type: str = "forest",
+    tree_type: str = "gs",
+    measure: str = "volume",
+    tree_domain: str | None = None,
+    area_domain: str | None = None,
+    totals: bool = True,
+    variance: bool = False,
+    most_recent: bool = False,
+    remeasure_period: float = 5.0,
+) -> polars.DataFrame
+```
+
+## Parameters
+
+<ParamField path="db" type="FIA" required>
+  An open `FIA` database connection clipped to a GRM evaluation via
+  `db.clip_most_recent(eval_type="GRM")`.
+</ParamField>
+
+<ParamField path="grp_by" type="str | list[str] | None" default="None">
+  One or more FIA column names by which to group results. For example,
+  `"COUNTYCD"` produces county-level removals estimates, and
+  `["COUNTYCD", "OWNGRPCD"]` produces county-by-ownership estimates.
+</ParamField>
+
+<ParamField path="by_species" type="bool" default="false">
+  When `True`, breaks out results by species code (`SPCD`). Pair with
+  `join_species_names()` to append common and scientific name columns.
+</ParamField>
+
+<ParamField path="by_size_class" type="bool" default="false">
+  When `True`, breaks out results by diameter size class according to
+  the scheme specified in `size_class_type`.
+</ParamField>
+
+<ParamField path="size_class_type" type="str" default='"standard"'>
+  Controls the size-class boundaries when `by_size_class=True`. Options:
+
+  - `"standard"` — 2-inch diameter classes
+  - `"descriptive"` — Sapling, poletimber, sawtimber
+  - `"market"` — Sawlog vs. non-sawlog based on merchantability thresholds
+</ParamField>
+
+<ParamField path="land_type" type="str" default='"forest"'>
+  Restricts estimation to a land classification. Use `"timber"` to limit
+  results to timberland (productive, unreserved forest land).
+</ParamField>
+
+<ParamField path="tree_type" type="str" default='"gs"'>
+  Tree subset filter. `"gs"` (growing stock) is the standard for timber
+  supply analysis and excludes rough and rotten trees.
+</ParamField>
+
+<ParamField path="measure" type="str" default='"volume"'>
+  The unit of removals to estimate. Accepted values:
+
+  - `"volume"` — Cubic-foot volume (cubic feet per acre / total cubic feet)
+  - `"biomass"` — Above-ground dry biomass (tons per acre / total tons)
+  - `"count"` — Trees per acre / total trees removed
+</ParamField>
+
+<ParamField path="tree_domain" type="str | None" default="None">
+  A SQL-style filter applied to tree-level attributes. For example,
+  `"DIA >= 9.0"` restricts removals to trees 9 inches DBH or larger.
+</ParamField>
+
+<ParamField path="area_domain" type="str | None" default="None">
+  A SQL-style filter applied to condition-level attributes. For example,
+  `"OWNGRPCD == 40"` restricts estimates to private land.
+</ParamField>
+
+<ParamField path="totals" type="bool" default="true">
+  When `True`, includes population-level totals (e.g., `REMOVAL_TOTAL`)
+  in addition to per-acre rates.
+</ParamField>
+
+<ParamField path="variance" type="bool" default="false">
+  When `True`, appends variance columns alongside the standard error columns
+  for custom uncertainty propagation workflows.
+</ParamField>
+
+<ParamField path="most_recent" type="bool" default="false">
+  When `True`, internally clips to the most-recent GRM evaluation. Prefer
+  explicit use of `db.clip_most_recent(eval_type="GRM")` for clarity.
+</ParamField>
+
+<ParamField path="remeasure_period" type="float" default="5.0">
+  The assumed remeasurement interval in years used to annualize removals.
+  FIA's standard panel cycle is five years; adjust this only if you are
+  working with non-standard evaluation periods.
+</ParamField>
+
+## Usage Examples
+
+```python
+from pyfia import FIA, removals, join_species_names
+
+with FIA("nc.duckdb") as db:
+    db.clip_by_state(37)
+    db.clip_most_recent(eval_type="GRM")
+
+    # Annual removals in cubic feet per acre
+    vol_removals = removals(db, measure="volume")
+
+    # By species with common names
+    by_spp = removals(db, by_species=True, totals=True)
+    by_spp = join_species_names(by_spp, db)
+
+    # Private land harvest only
+    private = removals(db, area_domain="OWNGRPCD == 40")
+
+    # Sawlog removals by market size class
+    sawlog = removals(db, by_size_class=True, size_class_type="market")
+```
+
+<Tip>
+  To compute a harvest-to-growth ratio, call both `removals()` and `growth()`
+  with the same `db` connection and domain filters, then divide
+  `REMOVAL_ACRE` by `GROWTH_ACRE`. Ratios above 1.0 indicate that harvests
+  exceed net growth in the reporting period.
+</Tip>
+
+## Output Columns
+
+The returned `polars.DataFrame` includes the columns below. Group columns such as `SPCD`, `OWNGRPCD`, or size-class labels are appended when relevant flags are set.
+
+| Column | Description |
+|---|---|
+| `REMOVAL_ACRE` | Average annual removals per acre |
+| `REMOVAL_TOTAL` | Population-level annual total (when `totals=True`) |
+| `REMOVAL_SE` | Standard error of `REMOVAL_ACRE` |
+| `REMOVAL_TOTAL_SE` | Standard error of `REMOVAL_TOTAL` (when `totals=True`) |
+| `CV` | Coefficient of variation as a percentage |
+| `n_plots` | Number of plots contributing to the estimate |
+
+## Common Patterns
+
+<Accordion title="Comparing removals across ownership classes">
+  Group by `OWNGRPCD` to see how harvest intensity differs between National
+  Forest, other public, and private lands in a single call.
+
+  ```python
+  by_owner = removals(db, grp_by="OWNGRPCD", measure="volume")
+  ```
+</Accordion>
+
+<Accordion title="Targeting merchantable sawtimber">
+  Combine `tree_domain` with `size_class_type="market"` to isolate sawlog
+  removals, which are the most commercially relevant category.
+
+  ```python
+  sawlog = removals(
+      db,
+      by_size_class=True,
+      size_class_type="market",
+      tree_domain="DIA >= 9.0",
+  )
+  ```
+</Accordion>
+
+<Accordion title="Adjusting for a non-standard remeasurement period">
+  If your evaluation spans seven years rather than the standard five, pass
+  `remeasure_period=7.0` so that annualized estimates are scaled correctly.
+
+  ```python
+  adjusted = removals(db, remeasure_period=7.0)
+  ```
+</Accordion>
+
+<Accordion title="Biomass removals for carbon accounting">
+  Switch to `measure="biomass"` to express removals in tons of above-ground
+  dry biomass per acre, which can be converted to carbon using a 0.5
+  biomass-to-carbon ratio.
+
+  ```python
+  bio = removals(db, measure="biomass", totals=True)
+  # Approximate carbon removed (short tons)
+  bio = bio.with_columns(
+      (pl.col("REMOVAL_TOTAL") * 0.5).alias("CARBON_REMOVED_TONS")
+  )
+  ```
+</Accordion>
